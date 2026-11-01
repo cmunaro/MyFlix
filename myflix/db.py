@@ -99,6 +99,15 @@ def initialize(path):
                                  ("submitted_at", "REAL NOT NULL DEFAULT 0")):
             if name not in columns:
                 db.execute(f"ALTER TABLE discoveries ADD COLUMN {name} {definition}")
+        columns = {row["name"] for row in db.execute("PRAGMA table_info(subscriptions)")}
+        for name, definition in (("lookup_state", "TEXT NOT NULL DEFAULT ''"),
+                                 ("lookup_token", "TEXT NOT NULL DEFAULT ''"),
+                                 ("lookup_seasons_done", "INTEGER NOT NULL DEFAULT 0"),
+                                 ("lookup_seasons_total", "INTEGER NOT NULL DEFAULT 0"),
+                                 ("lookup_season", "INTEGER NOT NULL DEFAULT 0"),
+                                 ("lookup_episodes", "INTEGER NOT NULL DEFAULT 0")):
+            if name not in columns:
+                db.execute(f"ALTER TABLE subscriptions ADD COLUMN {name} {definition}")
         db.execute("INSERT OR IGNORE INTO settings VALUES('download_limit','4')")
         db.execute("INSERT OR IGNORE INTO settings VALUES('processing_limit','1')")
         if db.execute("PRAGMA user_version").fetchone()[0] < 3:

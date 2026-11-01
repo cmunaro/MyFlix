@@ -1,10 +1,10 @@
 {% from 'catalog_controls.html' import season_controls with context %}
 <p class="panel-note">Following automatically downloads missing unwatched episodes from existing and future seasons. New follows start checking within about 30 seconds; provider checks repeat every four hours. Watched episodes and excluded seasons never download automatically. Manual downloads can include watched episodes.</p>
 {% for subscription in subscriptions %}
-<section class="admin-panel">
+<section class="admin-panel" data-lookup-id="{{ subscription.id }}">
   <div class="panel-heading"><h2>{{ subscription.series }}</h2><span class="section-tag">{{ subscription.site }}</span></div>
-  {% if subscription.error %}<p class="error" role="alert">{{ subscription.error }}</p>{% endif %}
-  <p>{{ 'Initial check pending' if not subscription.initialized else 'Last checked: ' ~ subscription.checked_at|datetime }} · {{ {'notify':'Notify only','auto':'Automatic downloads','paused':'Paused'}[subscription.mode] }}</p>
+  {% include 'lookup_status.html' %}
+  <p>{{ {'notify':'Notify only','auto':'Automatic downloads','paused':'Paused'}[subscription.mode] }}</p>
   <form method="post" action="{{ url_for('update_subscription',subscription_id=subscription.id) }}" class="monitor-settings">
     <input type="hidden" name="csrf" value="{{ session.csrf }}">
     <label>Downloads<select name="mode"><option value="auto" {% if subscription.mode == 'auto' %}selected{% endif %}>Automatically download unwatched episodes</option><option value="notify" {% if subscription.mode == 'notify' %}selected{% endif %}>Notify in Following only</option><option value="paused" {% if subscription.mode == 'paused' %}selected{% endif %}>Paused</option></select></label><button class="secondary">Save & check now</button>

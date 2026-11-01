@@ -137,7 +137,7 @@
         if (following) { return; }
         following = true; follow.setAttribute('aria-disabled', 'true');
         api('follow', {site: item.site, payload: payload, series: seriesName.value}, function (error) {
-          message.textContent = error || 'Following series. Missing unwatched episodes will start downloading automatically within about 30 seconds. Watched episodes and excluded seasons are skipped.';
+          message.textContent = error || 'Following series. Episode lookup queued. Track fetching progress and any errors in Followed series checks below. Missing unwatched episodes will start downloading automatically after the episode list is ready; watched episodes and excluded seasons are skipped.';
           follow.textContent = error ? 'Check Following before retrying' : 'Following';
         });
       };

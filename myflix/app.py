@@ -15,7 +15,7 @@ from .catalog import media_path, scan_safely
 from .db import connect, initialize, settings
 from .discovery import DiscoveryCache
 from .engine_jobs import validate_limits
-from .monitoring import SeriesMonitor, episode_status, follow
+from .monitoring import SeriesMonitor, episode_status, follow, lookup_status
 from .vibravid import VibraVid, VibraVidError
 
 
@@ -300,6 +300,8 @@ def create_app(config=None):
                 WHERE root=? ORDER BY series,season,episode,title""", (config["videos_path"],))]
             subscriptions = [dict(row) for row in db.execute("SELECT * FROM subscriptions WHERE root=? ORDER BY series",
                                                             (config["videos_path"],))]
+            for subscription in subscriptions:
+                subscription["lookup"] = lookup_status(subscription, config)
             for subscription in subscriptions if section == "following" else []:
                 subscription["episodes"] = [dict(row) for row in db.execute(
                     "SELECT * FROM discoveries WHERE subscription_id=? ORDER BY season,episode", (subscription["id"],))]
@@ -320,6 +322,17 @@ def create_app(config=None):
                                subscriptions=subscriptions, section=section, query=query,
                                notice=request.args.get("notice", ""))
 
+    @app.get("/admin/following/status")
+    def following_status():
+        with connect(database) as db:
+            config = settings(db)
+            subscriptions = db.execute("SELECT * FROM subscriptions WHERE root=? ORDER BY series",
+                                       (config["videos_path"],)).fetchall()
+            result = [lookup_status(item, config) for item in subscriptions]
+        response = jsonify(subscriptions=result)
+        response.headers["Cache-Control"] = "no-store"
+        return response
+
     @app.post("/admin/follow")
     def follow_series():
         body = request.get_json()
@@ -334,7 +347,7 @@ def create_app(config=None):
         if mode not in ("notify", "auto", "paused"):
             raise ValueError("Choose notify, automatic downloads, or paused")
         with connect(database) as db:
-            result = db.execute("UPDATE subscriptions SET mode=?,next_check=0 WHERE id=? AND root=?",
+            result = db.execute("UPDATE subscriptions SET mode=?,next_check=0,error='' WHERE id=? AND root=?",
                                 (mode, subscription_id, settings(db)["videos_path"]))
             if not result.rowcount:
                 abort(404)

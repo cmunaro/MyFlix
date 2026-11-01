@@ -94,3 +94,8 @@
 
 .catalog-series{border-bottom:1px solid #343434;margin:18px 0}.catalog-series>summary{display:flex;align-items:center;justify-content:space-between;padding:24px 12px;cursor:pointer;font-size:24px;font-weight:700}.catalog-season{margin:12px;padding:12px;border-left:2px solid #444}.catalog-season h3{font-size:24px}.season-controls{margin:18px 0}.season-controls p,.discovery-row p{color:#aaa;font-size:16px}.season-controls button{margin:0 12px 12px 0}.monitor-settings{display:flex;align-items:flex-end;flex-wrap:wrap;margin-bottom:24px}.monitor-settings label{max-width:100%;margin-right:18px}.monitor-settings select{display:block;width:100%}.discovery-row{padding:22px 12px;border-top:1px solid #343434}.discovery-row form{margin-top:12px}.discovery-row button{margin:0 10px 10px 0}.remove-video{margin:20px 0}.catalog-series summary:focus{outline:3px solid #fff;outline-offset:3px}.download-options input{max-width:100%}
 @media(max-width:760px){.admin-sidebar nav{flex-wrap:wrap}.admin-sidebar nav a{flex:1 1 30%}.catalog-season{margin:0;padding:8px}.catalog-series>summary{font-size:20px}.season-controls button,.discovery-row button{max-width:100%;white-space:normal}}
+.lookup-status{margin:16px 0;overflow-wrap:break-word}
+.lookup-status progress{display:block;width:100%;height:8px;accent-color:#e50914}
+.lookup-status progress[hidden]{display:none}
+.lookup-status p{margin:8px 0}
+#following-connection:empty{display:none}

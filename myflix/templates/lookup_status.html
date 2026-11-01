@@ -1,0 +1,7 @@
+<div class="lookup-status" aria-live="polite" aria-atomic="true" aria-busy="{{ 'true' if subscription.lookup.state == 'fetching' else 'false' }}">
+  <p data-lookup-message role="status">{{ subscription.lookup.message }}</p>
+  <p data-lookup-checked>Last checked: {{ subscription.lookup.checked }}</p>
+  <progress data-lookup-progress aria-label="Seasons fetched" {% if subscription.lookup.seasons_total %}max="{{ subscription.lookup.seasons_total }}" value="{{ subscription.lookup.seasons_done }}"{% endif %} {% if subscription.lookup.state != 'fetching' %}hidden{% endif %}></progress>
+  <p data-lookup-error class="error" role="alert" {% if not subscription.lookup.error %}hidden{% endif %}>{{ subscription.lookup.error }}</p>
+  <p data-lookup-complete {% if subscription.lookup.state != 'complete' %}hidden{% endif %}>Episode list ready. <a href="{{ url_for('admin',section='following') }}">View episodes in Following</a>.</p>
+</div>

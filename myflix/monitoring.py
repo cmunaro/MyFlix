@@ -5,6 +5,7 @@ import logging
 import re
 import threading
 import time
+import uuid
 from pathlib import Path
 
 from .db import connect, settings
@@ -79,6 +80,42 @@ def queued_episode(job, site, name, season, episode):
         return True
 
 
+def lookup_status(subscription, config):
+    item = dict(subscription)
+    state = item["lookup_state"]
+    error = item["error"]
+    done, total = item["lookup_seasons_done"], item["lookup_seasons_total"]
+    episodes = item["lookup_episodes"]
+    if state == "fetching":
+        message = "Fetching episodes — loading season list…"
+        if total:
+            message = f"Fetching episodes — {done} of {total} seasons fetched · {episodes} episodes found"
+            if item["lookup_season"]:
+                message += f" · fetching season {item['lookup_season']}"
+    elif item["mode"] == "paused":
+        state, message = "paused", "Episode checks paused."
+    elif error:
+        if state == "error":
+            message = f"Episode lookup failed after {done} of {total} seasons · {episodes} episodes found." if total else "Episode lookup failed."
+        else:
+            message = "Following needs attention."
+        state = "error"
+    elif item["next_check"] <= time.time():
+        state, message = "queued", "Episode lookup queued — waiting for the background checker…"
+        if not config.get("last_scan") or config.get("scan_error"):
+            message = "Episode lookup queued — waiting for a successful library scan…"
+    elif state == "complete":
+        message = f"Episode lookup complete — {episodes} episodes found across {total} seasons."
+        if not episodes:
+            message = "Episode lookup complete — no episodes returned by the provider."
+    else:
+        state, message = "idle", "Waiting for the next scheduled episode check."
+    return {"id": item["id"], "series": item["series"], "state": state,
+            "message": message, "error": error,
+            "seasons_done": done, "seasons_total": total, "episodes": episodes,
+            "checked": time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime(item["checked_at"])) if item["checked_at"] else "Not checked yet"}
+
+
 class SeriesMonitor:
     def __init__(self, database, engine):
         self.database = database
@@ -88,7 +125,27 @@ class SeriesMonitor:
         self.retries = DownloadRetries(database)
 
     def check(self, subscription):
-        result = self.engine.call("episodes", {"site": subscription["site"], "payload": json.loads(subscription["payload"])})
+        token = uuid.uuid4().hex
+        with connect(self.database) as db:
+            current = db.execute("SELECT * FROM subscriptions WHERE id=?", (subscription["id"],)).fetchone()
+            if not current or current["mode"] == "paused":
+                return
+            db.execute("""UPDATE subscriptions SET lookup_state='fetching',lookup_token=?,
+                lookup_seasons_done=0,lookup_seasons_total=0,lookup_season=0,lookup_episodes=0,error=''
+                WHERE id=?""", (token, subscription["id"]))
+        try:
+            result = self.engine.call("episodes", {"site": subscription["site"],
+                "payload": json.loads(subscription["payload"]), "lookup_token": token})
+            self._finish_check(subscription, result, token)
+        except Exception as error:
+            message = str(error) if isinstance(error, (VibraVidError, ValueError)) else "Episode lookup failed. Check the service logs."
+            with connect(self.database) as db:
+                db.execute("""UPDATE subscriptions SET lookup_state='error',lookup_token='',error=?,next_check=?
+                    WHERE id=? AND lookup_token=?""",
+                    (message, int(time.time()) + INTERVAL, subscription["id"], token))
+            raise
+
+    def _finish_check(self, subscription, result, token):
         episodes = result.get("episodes")
         if not isinstance(episodes, list) or len(episodes) > 20000:
             raise VibraVidError("Invalid episode metadata; previous discoveries preserved")
@@ -107,7 +164,10 @@ class SeriesMonitor:
         with connect(self.database) as db:
             db.execute("BEGIN IMMEDIATE")
             current = db.execute("SELECT * FROM subscriptions WHERE id=?", (subscription["id"],)).fetchone()
-            if not current or current["mode"] == "paused":
+            if not current or current["lookup_token"] != token:
+                return
+            if current["mode"] == "paused":
+                db.execute("UPDATE subscriptions SET lookup_state='',lookup_token='' WHERE id=?", (current["id"],))
                 return
             db.execute("UPDATE discoveries SET listed=0 WHERE subscription_id=?", (current["id"],))
             for (season, episode), title in found.items():
@@ -115,8 +175,11 @@ class SeriesMonitor:
                     VALUES(?,?,?,?,?) ON CONFLICT(subscription_id,season,episode)
                     DO UPDATE SET title=excluded.title,listed=1""",
                     (current["id"], season, episode, title, "new"))
-            db.execute("""UPDATE subscriptions SET initialized=?,checked_at=?,next_check=?,error='' WHERE id=?""",
-                       (bool(found) or current["initialized"], int(time.time()), int(time.time()) + INTERVAL, current["id"]))
+            season_count = len({season for season, episode in found})
+            db.execute("""UPDATE subscriptions SET initialized=?,checked_at=?,next_check=?,error='',lookup_state='complete',lookup_token='',
+                lookup_episodes=?,lookup_seasons_done=?,lookup_seasons_total=? WHERE id=?""",
+                       (bool(found) or current["initialized"], int(time.time()), int(time.time()) + INTERVAL, len(found),
+                        season_count, season_count, current["id"]))
 
     def download(self, subscription_id, season, episode, *, automatic=False, include_watched=False):
         with self.download_lock:
@@ -287,6 +350,11 @@ class SeriesMonitor:
             self.lock.release()
 
     def run(self, stop, scan_ready=None):
+        # A previous engine process cannot complete a lookup after a restart.
+        with connect(self.database) as db:
+            db.execute("""UPDATE subscriptions SET lookup_state='',lookup_token='',next_check=0,
+                error='Episode lookup interrupted by restart; waiting to check again.'
+                WHERE lookup_state='fetching'""")
         startup_recovery = True
         while not stop.is_set():
             if scan_ready is not None and not scan_ready.is_set():

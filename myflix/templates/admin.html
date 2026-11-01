@@ -2,7 +2,7 @@
 {% block title %}{{ {'downloads':'Downloads','library':'Library','settings':'Settings','following':'Following','removed':'Watched and removed'}[section] }} · MyFlix{% endblock %}
 {% block styles %}<link rel="stylesheet" href="{{ url_for('static',filename='admin.css') }}">{% endblock %}
 {% block body_class %}tv-admin{% endblock %}
-{% block scripts %}{% if section == 'downloads' %}<script src="{{ url_for('static',filename='downloads.js') }}" defer></script>{% endif %}{% endblock %}
+{% block scripts %}{% if section == 'downloads' %}<script src="{{ url_for('static',filename='downloads.js') }}" defer></script>{% endif %}{% if section in ('downloads','following') %}<script src="{{ url_for('static',filename='following.js') }}" defer></script>{% endif %}{% endblock %}
 {% block header %}
 <aside class="admin-sidebar">
   <a class="admin-wordmark" href="/" aria-label="MyFlix home">MYFLIX</a>
@@ -22,6 +22,7 @@
   <p>{{ {'downloads':'Find something great. Make it part of your collection.','library':'Keep your collection organized and ready to watch.','settings':'A few preferences. Everything stays at home.','following':'New episodes from the series you follow.','removed':'Your history stays here after videos leave the library.'}[section] }}</p></div>
   {% if section == 'library' %}<form method="post" action="/admin/scan"><input type="hidden" name="csrf" value="{{ session.csrf }}"><button class="secondary">↻ Scan library</button></form>{% endif %}
 </header>
+{% if section in ('downloads','following') %}<p id="following-connection" class="panel-note" role="status"></p>{% endif %}
 {% if notice %}<p role="status" class="notice">{{ notice }}</p>{% endif %}
 {% if config.scan_error %}<p role="alert" class="error">Scan failed: {{ config.scan_error }}. Your previous catalog is preserved.</p>{% endif %}
 {% if section == 'downloads' %}
@@ -36,6 +37,15 @@
     <p id="download-message" class="live-message" role="status" aria-live="polite"></p>
     <p class="panel-note">Follow a series to automatically download missing unwatched episodes, including existing seasons. Watched episodes and excluded seasons are skipped.</p>
     <div id="download-results" class="download-results"></div>
+  </section>
+  <section class="admin-panel" aria-labelledby="following-lookups-heading">
+    <div class="panel-heading"><h2 id="following-lookups-heading">Followed series checks</h2><a class="button secondary" href="{{ url_for('admin',section='following') }}">Manage followed series</a></div>
+    <p class="panel-note">Episode lists load before downloads can start. Large series can take several minutes.</p>
+    <div id="following-lookups">
+    {% for subscription in subscriptions %}
+      <div data-lookup-id="{{ subscription.id }}"><h3>{{ subscription.series }}</h3>{% include 'lookup_status.html' %}</div>
+    {% else %}<p data-no-lookups>No episode checks yet. Follow a series to get started.</p>{% endfor %}
+    </div>
   </section>
   <section class="admin-panel queue-panel" aria-labelledby="queue-heading">
     <div class="panel-heading"><div><p class="admin-kicker">ON THE WAY</p><h2 id="queue-heading">Current downloads</h2></div><button type="button" class="primary" id="retry-failed-downloads" hidden>Retry all failed downloads</button><button type="button" class="secondary" id="refresh-downloads">↻ Refresh</button></div>

@@ -79,6 +79,130 @@ class MonitoringTest(unittest.TestCase):
         os.utime(path, (time.time() - 120, time.time() - 120))
         return path
 
+    def lookup(self):
+        return self.client.get("/admin/following/status").json["subscriptions"][0]
+
+    def test_live_lookup_progress_completion_and_private_status_boundary(self):
+        from myflix.engine_api import report_metadata
+
+        self.post("/admin/follow", body={"site": "example", "payload": self.payload, "series": "Show"})
+        self.assertEqual(self.lookup()["state"], "queued")
+        call = self.provider.call
+
+        def provider(action, body=None):
+            if action == "episodes":
+                token = body["lookup_token"]
+                self.assertEqual(self.lookup()["state"], "fetching")
+                self.assertIn("season list", self.lookup()["message"])
+                report_metadata(self.database, "stale-token", 99, 99, 999)
+                self.assertEqual(self.lookup()["seasons_done"], 0)
+                report_metadata(self.database, token, 1, 2, 8, 3)
+                status = self.lookup()
+                self.assertEqual((status["seasons_done"], status["seasons_total"], status["episodes"]), (1, 2, 8))
+                self.assertIn("fetching season 3", status["message"])
+                response = self.client.get("/admin/following/status")
+                self.assertEqual(response.headers["Cache-Control"], "no-store")
+                self.assertNotIn(token.encode(), response.data)
+                self.assertNotIn(b"payload", response.data)
+                page = self.client.get("/admin?section=following").data
+                self.assertIn(b'data-lookup-progress', page)
+                self.assertIn(b'max="2" value="1"', page)
+                # Another library's follows must never leak through the endpoint.
+                with connect(self.database) as db:
+                    db.execute("UPDATE subscriptions SET root='/other-library' WHERE id=1")
+                self.assertEqual(self.client.get("/admin/following/status").json["subscriptions"], [])
+                with connect(self.database) as db:
+                    db.execute("UPDATE subscriptions SET root=? WHERE id=1", (str(self.library),))
+            return call(action, body)
+
+        self.provider.call = provider
+        self.monitor.tick()
+        status = self.lookup()
+        self.assertEqual(status["state"], "complete")
+        self.assertEqual(status["episodes"], 1)
+        self.assertIn("1 episodes found", status["message"])
+        self.assertNotEqual(status["checked"], "Not checked yet")
+        self.assertEqual(self.discoveries()[0]["state"], "submitted")
+        # Polling reads only SQLite; it never causes another provider request.
+        calls = len(self.provider.calls)
+        self.lookup()
+        self.assertEqual(len(self.provider.calls), calls)
+
+    def test_lookup_failure_is_visible_and_late_progress_cannot_revive_it(self):
+        from myflix.engine_api import report_metadata
+
+        self.follow()
+        previous = self.discoveries()
+        call = self.provider.call
+        tokens = []
+
+        def fail(action, body=None):
+            if action == "episodes":
+                tokens.append(body["lookup_token"])
+                report_metadata(self.database, tokens[-1], 1, 2, 7, 2)
+                raise VibraVidError("Episode lookup timed out")
+            return call(action, body)
+
+        self.provider.call = fail
+        self.check_now()
+        status = self.lookup()
+        self.assertEqual(status["state"], "error")
+        self.assertIn("timed out", status["error"])
+        self.assertEqual(status["seasons_done"], 1)
+        self.assertIn("1 of 2 seasons", status["message"])
+        self.assertEqual(self.discoveries(), previous)
+        report_metadata(self.database, tokens[-1], 2, 2, 20)
+        self.assertEqual(self.lookup(), status)
+        self.post("/admin/following/1", {"mode": "notify"})
+        self.assertEqual(self.lookup()["state"], "queued")
+        self.assertEqual(self.lookup()["error"], "")
+        self.provider.call = call
+        self.monitor.tick()
+        self.assertEqual(self.lookup()["state"], "complete")
+
+    def test_interrupted_lookup_requeues_on_restart_and_migration_preserves_progress(self):
+        self.follow()
+        with connect(self.database) as db:
+            db.execute("UPDATE subscriptions SET lookup_state='fetching',lookup_token='old',lookup_seasons_done=2")
+        initialize(self.database)
+        self.assertEqual(self.lookup()["seasons_done"], 2)
+        stop = threading.Event()
+
+        def tick():
+            status = self.lookup()
+            self.assertEqual(status["state"], "error")
+            self.assertIn("interrupted", status["error"])
+            with connect(self.database) as db:
+                row = db.execute("SELECT lookup_token,next_check FROM subscriptions WHERE id=1").fetchone()
+            self.assertEqual(tuple(row), ("", 0))
+            stop.set()
+
+        with patch.object(self.monitor, "tick", side_effect=tick):
+            self.monitor.run(stop)
+
+    def test_progress_columns_migrate_without_changing_follows_or_discoveries(self):
+        self.follow()
+        previous = self.discoveries()
+        columns = ("lookup_state", "lookup_token", "lookup_seasons_done",
+                   "lookup_seasons_total", "lookup_season", "lookup_episodes")
+        with connect(self.database) as db:
+            for column in columns:
+                db.execute("ALTER TABLE subscriptions DROP COLUMN " + column)
+        initialize(self.database)
+        initialize(self.database)
+        self.assertEqual(self.discoveries(), previous)
+        self.assertEqual(self.lookup()["series"], "Show")
+        self.assertEqual(self.lookup()["state"], "idle")
+
+    def test_queued_status_explains_scan_block_and_pause(self):
+        self.follow()
+        self.post("/admin/following/1", {"mode": "auto"})
+        with connect(self.database) as db:
+            db.execute("INSERT OR REPLACE INTO settings VALUES('scan_error','Missing library mount')")
+        self.assertIn("successful library scan", self.lookup()["message"])
+        self.post("/admin/following/1", {"mode": "paused"})
+        self.assertEqual(self.lookup()["state"], "paused")
+
     def test_sparse_episodes_and_new_season_are_durable(self):
         self.provider.episodes = [{"season": 1, "episode": 1}, {"season": 1, "episode": 3}]
         self.follow()
