@@ -9,6 +9,7 @@ from pathlib import Path
 from flask import Flask, abort, jsonify, redirect, render_template, request, send_file, session, url_for
 from werkzeug.exceptions import HTTPException
 
+from .artwork import ArtworkCache
 from .catalog import media_path, scan_safely
 from .db import connect, initialize, settings
 from .vibravid import VibraVid, VibraVidError
@@ -18,14 +19,11 @@ def create_app(config=None):
     app = Flask(__name__)
     data = Path(os.environ.get("MYFLIX_DATA", "data")).resolve()
     app.config.update(DATABASE=str(data / "myflix.sqlite3"),
-                      ADMIN_PASSWORD=os.environ.get("MYFLIX_ADMIN_PASSWORD", ""),
                       VIBRAVID_ADDRESS="http://127.0.0.1:0",
                       MAX_CONTENT_LENGTH=16 * 1024,
                       SESSION_COOKIE_HTTPONLY=True, SESSION_COOKIE_SAMESITE="Strict")
     if config:
         app.config.update(config)
-    if not app.config["ADMIN_PASSWORD"]:
-        raise RuntimeError("Set MYFLIX_ADMIN_PASSWORD before starting MyFlix")
     database = app.config["DATABASE"]
     Path(database).parent.mkdir(parents=True, exist_ok=True)
     initialize(database)
@@ -53,13 +51,13 @@ def create_app(config=None):
     app.extensions["scan"] = run_scan
     vibravid = VibraVid(app.config["VIBRAVID_ADDRESS"], app.config["VIBRAVID_SECRET"])
     app.extensions["vibravid"] = vibravid
+    artwork_cache = ArtworkCache(database, vibravid)
+    app.extensions["artwork"] = artwork_cache
 
     @app.before_request
     def protect():
         if "csrf" not in session:
             session["csrf"] = secrets.token_hex(24)
-        if request.path.startswith("/admin") and request.path != "/admin/login" and not session.get("admin"):
-            return redirect(url_for("login"))
         if request.method == "POST":
             token = request.headers.get("X-CSRF-Token", "") or request.form.get("csrf", "")
             if not hmac.compare_digest(token.encode(), session["csrf"].encode()):
@@ -98,32 +96,18 @@ def create_app(config=None):
             abort(404)
         return dict(item)
 
-    def artwork(item, kind):
-        video = Path(item["path"])
-        names = ([video.with_name(video.stem + "-fanart.jpg"), video.parent / "fanart.jpg"]
-                 if kind == "backdrop" else
-                 [video.with_name(video.stem + "-poster.jpg"), video.with_name(video.stem + "-thumb.jpg"), video.parent / "poster.jpg"])
-        if item["series"]:
-            names.append(video.parent.parent / ("fanart.jpg" if kind == "backdrop" else "poster.jpg"))
-        for name in names:
-            try:
-                return media_path(item["root"], name)
-            except (OSError, ValueError):
-                continue
-        return None
-
     def decorate(item):
-        item["poster"] = url_for("art", media_id=item["id"], kind="poster") if artwork(item, "poster") else None
-        item["backdrop"] = url_for("art", media_id=item["id"], kind="backdrop") if artwork(item, "backdrop") else None
+        item["poster"] = url_for("art", media_id=item["id"], kind="poster") if artwork_cache.path(item, "poster") else None
+        item["backdrop"] = url_for("art", media_id=item["id"], kind="backdrop") if artwork_cache.path(item, "backdrop") else None
         item["href"] = url_for("series", media_id=item["id"]) if item["series"] else url_for("watch", media_id=item["id"])
         return item
 
     @app.get("/art/<int:media_id>/<any(poster,backdrop):kind>")
     def art(media_id, kind):
-        path = artwork(get_media(media_id), kind)
+        path = artwork_cache.path(get_media(media_id), kind)
         if not path:
             abort(404)
-        return send_file(path, conditional=True, mimetype="image/jpeg")
+        return send_file(path, conditional=True, mimetype="image/png" if path.suffix == ".png" else "image/jpeg")
 
     @app.get("/")
     def home():
@@ -157,19 +141,10 @@ def create_app(config=None):
         shelves = []
         if continuing:
             shelves.append(("Continue watching", continuing))
-        if titles and view != "continue":
-            if query:
-                shelves.append(("Search results", titles))
-            elif view == "movies":
-                shelves.append(("Movies", films))
-            elif view == "series":
-                shelves.append(("TV Shows", list(shows.values())))
-            else:
-                shelves.append(("Recently added", sorted(titles, key=lambda r: (r["added_at"], r["id"]), reverse=True)[:30]))
-        if films and view not in ("movies", "continue") and not query:
-            shelves.append(("Films", films))
-        if shows and view not in ("series", "continue") and not query:
+        if shows and view != "continue":
             shelves.append(("Series", list(shows.values())))
+        if films and view != "continue":
+            shelves.append(("Film", films))
         featured = continuing[0] if continuing else (max(titles, key=lambda r: (r["added_at"], r["id"])) if titles else None)
         return render_template("home.html", shelves=shelves, featured=featured, query=query, view=view)
 
@@ -252,23 +227,6 @@ def create_app(config=None):
                 ON CONFLICT(media_id) DO UPDATE SET position=excluded.position,duration=excluded.duration,
                 watched=excluded.watched,updated_at=CURRENT_TIMESTAMP""", (media_id, position, duration, complete))
         return jsonify(ok=True)
-
-    @app.route("/admin/login", methods=["GET", "POST"])
-    def login():
-        error = ""
-        if request.method == "POST":
-            if hmac.compare_digest(request.form.get("password", "").encode(), app.config["ADMIN_PASSWORD"].encode()):
-                session.clear()
-                session["admin"] = True
-                session["csrf"] = secrets.token_hex(24)
-                return redirect(url_for("admin"))
-            error = "Incorrect password"
-        return render_template("login.html", error=error), 401 if error else 200
-
-    @app.post("/admin/logout")
-    def logout():
-        session.clear()
-        return redirect(url_for("home"))
 
     @app.get("/admin")
     def admin():

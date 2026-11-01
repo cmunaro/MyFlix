@@ -10,7 +10,6 @@ Install [mise](https://mise.jdx.dev/), then from this directory:
 mise trust
 mise install
 mise run setup
-export MYFLIX_ADMIN_PASSWORD='choose-a-long-unique-password'
 mise run dev
 ```
 
@@ -20,15 +19,23 @@ Python and uv are pinned in `mise.toml`; `.python-version` keeps uv aligned with
 
 ## What works
 
-- A Netflix-style TV interface: featured title, horizontal shelves, one tile per series, season/episode screens, search, and continue watching. Local JPEG artwork is served from the library; titles without art use a typography-based fallback. The player fills the screen and hides its overlay during playback.
+- A Netflix-style TV interface: featured title and three horizontal shelves in order: Continue watching, Series, and Film. Empty shelves are hidden. The header provides search and library management without category tabs. Series have one tile each and season/episode screens. Local JPEG artwork is served from the library; titles without art use a typography-based fallback. The player fills the screen and hides its overlay during playback.
 - Arrow-key / D-pad navigation with visible focus. Left/right moves along shelves, including off-screen cards; up/down moves between shelves. Browsing focus is restored when returning. The player has one transient overlay with an icon row, seek timeline, remaining time, mute, and fullscreen. Controls and cursor hide after three idle seconds during playback, including when a control had focus. Pointer/touch or remote input reveals controls; pause keeps them available. OK/Space toggles playback, left/right on the video seeks 10 seconds, and up/down accesses the controls. Back exits fullscreen, dismisses visible playback controls, then returns to the library. Native controls remain a no-JavaScript fallback.
 - HTTP byte ranges for seeking; resume saved every ten seconds, on pause, and on navigation when the browser supports Beacon. Watched status is recorded automatically at 95% playback and on completion; the player has no manual watched button.
 - A next-episode prompt appears during the last 30 seconds (or last 10% for short clips), independently of the fading controls. Select it to advance immediately, or let the next available episode start automatically at the end. Transitions reuse the same video element to preserve fullscreen, update the address and title, and save progress against the correct episode. Hidden/missing episodes are excluded; films and final episodes stop normally. Failed transitions offer a manual retry instead of looping.
-- Password-protected `/admin`: choose the library folder, scan, correct titles and season/episode numbers, and hide items from TV. Integrated provider search, season/episode selection, film and series downloads, queue/history, cancellation, and engine status stay within MyFlix.
+- Password-free `/admin`: choose the library folder, scan, correct titles and season/episode numbers, and hide items from TV. Integrated provider search, season/episode selection, film and series downloads, queue/history, cancellation, and engine status stay within MyFlix.
 - Background scans every 60 seconds. Imports MP4, M4V, MKV, WebM, and MOV; skips hidden paths, symlinks, empty files, and files modified in the last 60 seconds.
 - Episode names such as `The.Show.S01E02.Title.mp4` and `The.Show.1x02.Title.mp4` are inferred. Edit unusual naming in admin. Edits, visibility, and progress survive rescans. Missing files retain records and history and disappear from the TV until restored.
 
 Progress belongs to one household, shared across devices. Concurrent devices use the last received update. Renaming/moving a video creates a new catalog identity; progress is retained against its previous path. Changing the configured root hides the previous root's catalog without deleting it.
+
+## Automatic covers
+
+Covers come directly from the same providers VibraVid uses to download films and series. No account, API key, or separate metadata service is needed. MyFlix first reuses artwork URLs from active downloads, the queue, and saved download history. Missing older titles use VibraVid provider search, matching catalog title, film/series type, and release year when present. Episodes share their series cover. Ambiguous or unavailable titles keep their title-card fallback.
+
+A single background worker checks every 60 seconds and handles up to ten missing titles per pass. Existing library artwork always takes priority. Provider JPEG, PNG, and WebP images are resized and cached as JPEG under the data directory's `artwork/` folder for TV compatibility and offline use. Pillow is already bundled with VibraVid and is declared directly for this conversion. Local fanart still supplies backgrounds. Rendering pages and serving covers never trigger a network request. Refresh the TV library to see new covers.
+
+The admin page reports failures. Missing covers are checked again after seven days; provider or disk errors pause lookups for an hour. No media files or watch history are changed. The worker uses the restricted server-side engine API and downloads images only from public HTTP(S) addresses, with size limits and no redirects.
 
 ## VibraVid integration
 
@@ -43,6 +50,7 @@ The bundled engine has its own Django SQLite database alongside MyFlix's catalog
 ```text
 myflix.sqlite3             # Catalog, settings, watch progress, internal secrets
 library/                   # Default completed library; configurable in admin
+artwork/                   # Cached automatic covers, shared by title
 vibravid/Conf/             # Engine preferences and provider login settings
 vibravid/downloads/        # Active/staged downloads, never indexed as the library
 vibravid/db.sqlite3        # Engine history and internal state
@@ -85,7 +93,7 @@ sudo systemctl enable --now myflix
 sudo systemctl status myflix
 ```
 
-Set a real password in `/etc/myflix.env`. The bundled engine runs as the same `myflix` account; no second service or user is needed. Ensure `/opt/myflix` and the mise interpreter are readable/traversable by the `myflix` user. Keep code owned by the installation user, not the service user.
+Adjust the bind address and port in `/etc/myflix.env` if needed. The bundled engine runs as the same `myflix` account; no second service or user is needed. Ensure `/opt/myflix` and the mise interpreter are readable/traversable by the `myflix` user. Keep code owned by the installation user, not the service user.
 
 The service starts the locked `.venv` directly; mise is used during installation, not on every boot. Waitress uses four threads. All state, internal engine configuration, staging downloads, and SQLite databases live under `/var/lib/myflix`. The service can write there and publish completed downloads to `/srv/media/library`. It restarts on failure. Open the admin page to configure `/srv/media/library` after startup.
 
@@ -96,7 +104,7 @@ sudo journalctl -u myflix -f
 curl http://127.0.0.1:8090/health
 ```
 
-Use on a trusted home LAN. TV browsing/playback and progress updates are available to LAN clients; admin changes and download operations require login and all writes require CSRF tokens. Do not port-forward the service. Remote access needs a VPN or an authenticated TLS reverse proxy. For direct HTTPS behind a proxy, also configure Flask's secure session cookie appropriately. MyFlix does not provide multi-user profiles or permanent file deletion; use filesystem tools for permanent deletion.
+Use on a trusted home LAN. TV browsing/playback and progress updates are available to LAN clients; admin management and download operations are password-free for anyone who can reach the service. All writes require CSRF tokens. No admin password environment variable is needed; existing `MYFLIX_ADMIN_PASSWORD` values are ignored and can be removed. Do not port-forward the service. Remote access needs a VPN or an authenticated TLS reverse proxy. For direct HTTPS behind a proxy, also configure Flask's secure session cookie appropriately. MyFlix does not provide multi-user profiles or permanent file deletion; use filesystem tools for permanent deletion.
 
 ## TV compatibility
 
@@ -115,7 +123,7 @@ mise run test
 mise run test-tv
 ```
 
-Run setup first. Tests include starting the actual bundled engine with an automatically generated secret, querying providers/status/queue, verifying duplicate-instance protection and shutdown, preserving configuration, and publishing to the latest UI-selected folder. Other tests cover import, inferred episode ordering, HTTP ranges, progress/resume, watched transitions, rescans, missing media, folder changes, series/artwork access, authentication, CSRF, input validation, symlink confinement, atomic hook publication, and authenticated HTTP integration for provider search, seasons, downloads, queue/status, and cancellation.
+Run setup first. Tests include starting the actual bundled engine with an automatically generated secret, querying providers/status/queue, verifying duplicate-instance protection and shutdown, preserving configuration, and publishing to the latest UI-selected folder. Other tests cover import, inferred episode ordering, HTTP ranges, progress/resume, watched transitions, rescans, missing media, folder changes, series/artwork access, password-free admin access, CSRF, input validation, symlink confinement, atomic hook publication, and HTTP integration for provider search, seasons, downloads, queue/status, and cancellation.
 
 The optional `test-tv` task pins Node only for the development test; the service requires no Node runtime. It exercises remote shelf navigation, off-screen selection, shorter shelves, restored browsing focus, player auto-hide with focused buttons, hidden-control tab order, remote media keys, pointer/remote seek buttons, cached metadata, fullscreen, resume saves, next-episode prompts, manual/automatic episode transitions, failed transitions, final episodes, and blocked autoplay with small DOM fixtures. It does not replace visual/browser or physical TV testing.
 

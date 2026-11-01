@@ -1,5 +1,6 @@
 import errno
 import os
+import re
 import tempfile
 import time
 import unittest
@@ -19,7 +20,7 @@ class MyFlixTest(unittest.TestCase):
         self.library = self.base / "library"
         self.library.mkdir()
         self.database = str(self.base / "myflix.sqlite3")
-        self.app = create_app({"TESTING": True, "DATABASE": self.database, "ADMIN_PASSWORD": "test-password"})
+        self.app = create_app({"TESTING": True, "DATABASE": self.database})
         self.client = self.app.test_client()
         self.client.get("/")
         self.csrf = self.token()
@@ -36,11 +37,7 @@ class MyFlixTest(unittest.TestCase):
             return self.client.post(path, json=body, headers={"X-CSRF-Token": self.token()})
         return self.client.post(path, data={"csrf": self.token(), **(data or {})})
 
-    def login(self):
-        self.assertEqual(self.post("/admin/login", {"password": "test-password"}).status_code, 302)
-
     def configure(self):
-        self.login()
         self.assertEqual(self.post("/admin/settings", {"videos_path": str(self.library)}).status_code, 302)
 
     def video(self, name="Example.mp4", content=b"0123456789"):
@@ -100,11 +97,16 @@ class MyFlixTest(unittest.TestCase):
         with connect(self.database) as db:
             self.assertEqual(db.execute("SELECT position FROM progress").fetchone()[0], 30)
 
-    def test_admin_auth_csrf_validation_and_root_switch(self):
-        self.assertEqual(self.client.get("/admin").status_code, 302)
-        self.assertEqual(self.client.post("/admin/scan").status_code, 302)
-        self.assertEqual(self.client.post("/admin/login", data={"password": "test-password"}).status_code, 403)
-        self.assertEqual(self.client.post("/admin/login", data={"csrf": "☃"}).status_code, 403)
+    def test_admin_password_free_csrf_validation_and_root_switch(self):
+        page = self.client.get("/admin")
+        self.assertEqual(page.status_code, 200)
+        self.assertNotIn(b"Sign out", page.data)
+        self.assertNotIn("ADMIN_PASSWORD", self.app.config)
+        self.assertEqual(self.client.post("/admin/scan").status_code, 403)
+        self.assertEqual(self.client.post("/admin/scan", data={"csrf": "☃"}).status_code, 403)
+        other_client = self.app.test_client()
+        self.assertEqual(other_client.get("/admin").status_code, 200)
+        self.assertEqual(other_client.post("/admin/scan", data={"csrf": self.token()}).status_code, 403)
         self.configure()
         self.assertEqual(self.post("/admin/settings", {"videos_path": "/does-not-exist"}).status_code, 400)
         # Old external-link settings are ignored and removed on save.
@@ -153,6 +155,22 @@ class MyFlixTest(unittest.TestCase):
         self.assertNotIn(b"Ready to play", self.client.get("/?q=no-match").data)
         self.assertEqual(self.client.get("/admin").status_code, 200)
         self.assertEqual(self.client.get("/health").json, {"status": "ok"})
+
+    def test_home_has_only_continue_series_and_film_shelves(self):
+        self.configure()
+        for name in ("Show.S01E01.mp4", "Show.S01E02.mp4", "Film.mp4"):
+            self.video(name)
+        scan(self.database)
+        with connect(self.database) as db:
+            first = db.execute("SELECT id FROM media WHERE episode=1").fetchone()[0]
+        self.post(f"/api/progress/{first}", body={"position": 30, "duration": 100})
+        home = self.client.get("/").data.decode()
+        self.assertEqual(re.findall(r"<h2>(.*?)</h2>", home), ["Continue watching", "Series", "Film"])
+        self.assertNotIn('aria-label="Browse"', home)
+        self.assertNotIn("Recently added", home)
+        self.assertEqual(home.count(f'href="/series/{first}" data-card'), 1)
+        search = self.client.get("/?q=Show").data.decode()
+        self.assertEqual(re.findall(r"<h2>(.*?)</h2>", search), ["Continue watching", "Series"])
 
     def test_episode_playback_contract_orders_seasons_and_excludes_hidden_items(self):
         self.configure()

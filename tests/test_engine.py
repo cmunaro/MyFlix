@@ -17,7 +17,7 @@ class ManagedEngineTest(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.data = Path(self.temp.name)
         self.database = str(self.data / "myflix.sqlite3")
-        self.app = create_app({"TESTING": True, "DATABASE": self.database, "ADMIN_PASSWORD": "test"})
+        self.app = create_app({"TESTING": True, "DATABASE": self.database})
 
     def tearDown(self):
         self.temp.cleanup()
@@ -25,7 +25,7 @@ class ManagedEngineTest(unittest.TestCase):
     def test_secret_default_library_and_managed_configuration_persist(self):
         secret = self.app.config["VIBRAVID_SECRET"]
         self.assertTrue(len(secret) >= 64)
-        second = create_app({"DATABASE": self.database, "ADMIN_PASSWORD": "test"})
+        second = create_app({"DATABASE": self.database})
         self.assertEqual(second.config["VIBRAVID_SECRET"], secret)
         state, runtime = prepare(self.database)
         self.assertTrue((runtime / "GUI/webgui/wsgi.py").is_file())

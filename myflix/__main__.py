@@ -31,6 +31,7 @@ def main():
     try:
         engine.start()
         threading.Thread(target=index, name="library-index", daemon=True).start()
+        threading.Thread(target=app.extensions["artwork"].run, args=(stop,), name="artwork-cache", daemon=True).start()
 
         def monitor():
             while not stop.wait(1):

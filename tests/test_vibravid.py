@@ -63,7 +63,7 @@ class IntegrationTest(unittest.TestCase):
         Engine.failure = None
         self.temp = tempfile.TemporaryDirectory()
         self.app = create_app({"TESTING": True, "DATABASE": str(Path(self.temp.name) / "db.sqlite3"),
-                               "ADMIN_PASSWORD": "admin", "VIBRAVID_ADDRESS": self.address,
+                               "VIBRAVID_ADDRESS": self.address,
                                "VIBRAVID_SECRET": "private-engine-secret"})
         self.client = self.app.test_client()
         self.client.get("/")
@@ -75,14 +75,10 @@ class IntegrationTest(unittest.TestCase):
         with self.client.session_transaction() as session:
             return session["csrf"]
 
-    def login(self):
-        self.client.post("/admin/login", data={"password": "admin", "csrf": self.token()})
-
     def post(self, action, body):
         return self.client.post("/admin/vibravid/" + action, json=body, headers={"X-CSRF-Token": self.token()})
 
-    def test_search_seasons_queue_cancel_through_authenticated_admin(self):
-        self.login()
+    def test_search_seasons_queue_cancel_without_login(self):
         self.assertEqual(self.client.get("/admin/vibravid/sites").json["groups"][0]["label"], "Film & TV")
         result = self.post("search", {"query": "A show", "site": "example"}).json["results"][0]
         choice = {"site": result["site"], "payload": result["payload"]}
@@ -97,10 +93,7 @@ class IntegrationTest(unittest.TestCase):
         self.assertNotIn(b"private-engine-secret", self.client.get("/admin").data)
         self.assertNotIn(b"VibraVid Web URL", self.client.get("/admin").data)
 
-    def test_auth_csrf_allowlist_and_validation_prevent_engine_calls(self):
-        self.assertEqual(self.client.get("/admin/vibravid/queue").status_code, 302)
-        self.assertEqual(self.post("cancel", {"download_id": "job-1"}).status_code, 302)
-        self.login()
+    def test_csrf_allowlist_and_validation_prevent_engine_calls(self):
         self.assertEqual(self.client.post("/admin/vibravid/download", json={}).status_code, 403)
         self.assertEqual(self.client.get("/admin/vibravid/download").status_code, 405)
         self.assertEqual(self.post("unknown", {}).status_code, 405)
@@ -111,7 +104,6 @@ class IntegrationTest(unittest.TestCase):
         self.assertEqual(Engine.calls, [])
 
     def test_engine_errors_are_safe_and_mutations_are_not_retried(self):
-        self.login()
         Engine.failure = (500, {"error": "sensitive-provider-detail"})
         response = self.post("download", {"site": "example", "payload": {"name": "Film", "is_movie": True}})
         self.assertEqual(response.status_code, 502)

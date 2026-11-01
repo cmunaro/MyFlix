@@ -1,7 +1,7 @@
 {% extends 'base.html' %}
 {% block scripts %}<script src="{{ url_for('static',filename='downloads.js') }}" defer></script>{% endblock %}
 {% block content %}
-<p class="eyebrow">BEHIND THE SCENES</p><div class="section-heading"><h1>The control room.</h1><form method="post" action="/admin/logout"><input type="hidden" name="csrf" value="{{ session.csrf }}"><button>Sign out</button></form></div>
+<p class="eyebrow">BEHIND THE SCENES</p><div class="section-heading"><h1>The control room.</h1></div>
 {% if notice %}<p role="status" class="notice">{{ notice }}</p>{% endif %}
 {% if config.scan_error %}<p role="alert" class="error">Scan failed: {{ config.scan_error }}. The previous catalog has been preserved.</p>{% endif %}
 <section class="panel"><h2>Library folder</h2><p>Completed downloads appear here automatically after publication.</p>
@@ -9,6 +9,11 @@
 <label>Videos folder <input name="videos_path" value="{{ config.videos_path or '' }}" placeholder="/srv/media/library" required><small>Absolute path on the server. Use a completed library, separate from active downloads.</small></label>
 <button class="primary">Save settings</button></form>
 <div class="actions"><form method="post" action="/admin/scan"><input type="hidden" name="csrf" value="{{ session.csrf }}"><button>Scan library now</button></form></div><p class="hint">Automatic scan every 60 seconds. New files need to be at least 60 seconds old. Last successful scan: {{ config.last_scan or 'never' }} (Unix time).</p></section>
+<section class="panel"><h2>Automatic covers</h2>
+<p>Covers come directly from the download providers through VibraVid. Existing downloads use their saved artwork; older titles are looked up through provider search. No account or API key is needed. Reload the TV library to see new covers.</p>
+{% if config.artwork_error %}<p class="error" role="alert">{{ config.artwork_error }}</p>{% endif %}
+<p class="hint">Existing local artwork takes priority. Covers are cached for offline use.</p>
+</section>
 <section class="panel downloads-panel" id="downloads"><h2>Find & download</h2><p>Search providers, choose a film or episodes, and download directly into your collection.</p><p id="download-connection" role="status">Connecting to download engine…</p>
 <form id="download-search" class="download-search"><label>Title<input name="query" id="download-query" maxlength="200" placeholder="Search films and series" required></label><label>Provider<select id="download-provider" aria-label="Download provider"><option value="__all__">All providers</option></select></label><button class="primary" id="search-downloads">Search</button></form>
 <p id="download-message" role="status" aria-live="polite"></p><div id="download-results"></div>

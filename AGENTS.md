@@ -15,8 +15,8 @@ mise run test
 mise run test-tv
 ```
 
-`MYFLIX_ADMIN_PASSWORD` must be set before starting the application. Setup fetches
-the pinned VibraVid source before syncing the frozen Python dependency lock.
+Admin is password-free on the trusted household LAN. Setup fetches the pinned
+VibraVid source before syncing the frozen Python dependency lock.
 The optional TV test task pins its own Node version; production needs no Node.
 
 ## Product and deployment
@@ -35,9 +35,11 @@ The optional TV test task pins its own Node version; production needs no Node.
 
 ## Ownership and invariants
 
-- `myflix/app.py` owns HTTP routes, authentication, CSRF, and playback metadata.
+- `myflix/app.py` owns HTTP routes, CSRF, and playback metadata.
 - `myflix/db.py` owns SQLite connections and schema initialization.
 - `myflix/catalog.py` owns scans, filename inference, and media path confinement.
+- `myflix/artwork.py` owns provider artwork from VibraVid and the local artwork cache.
+  Preserve library sidecars, keep lookup off HTTP request paths, and require no API keys.
 - `myflix/engine.py` owns engine configuration, readiness, lifecycle, and shutdown.
   `scripts/setup.py` installs the source revision pinned in `pyproject.toml`;
   `uv.lock` locks its dependencies. Do not edit `.vibravid/` as application code.
@@ -57,7 +59,7 @@ The optional TV test task pins its own Node version; production needs no Node.
   Automatically advance at completion using the same video element to preserve
   fullscreen. Exclude hidden/unavailable episodes and stop at the final episode.
 - Preserve metadata edits and watch history during rescans and missing mounts.
-  Enforce configured-root confinement, authentication, CSRF, and input validation.
+  Enforce configured-root confinement, CSRF, and input validation.
   Keep internal engine secrets server-side and never retry download mutations
   automatically after uncertain failures.
 

@@ -42,6 +42,9 @@ def initialize(path):
                 watched INTEGER NOT NULL DEFAULT 0,
                 updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
+            CREATE TABLE IF NOT EXISTS artwork (
+                key TEXT PRIMARY KEY, retry_at INTEGER NOT NULL
+            );
             PRAGMA user_version=1;
         """)
 
