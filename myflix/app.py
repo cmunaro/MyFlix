@@ -124,7 +124,8 @@ def create_app(config=None):
         view = request.args.get("view", "all")
         with connect(database) as db:
             rows = db.execute("""SELECT m.*,COALESCE(p.position,0) position,
-                COALESCE(p.duration,0) duration,COALESCE(p.watched,0) watched
+                COALESCE(p.duration,0) duration,COALESCE(p.watched,0) watched,
+                COALESCE(p.updated_at,'') progress_updated_at
                 FROM media m LEFT JOIN progress p ON p.media_id=m.id
                 WHERE m.hidden=0 AND m.available=1 AND m.root=?
                 ORDER BY m.series COLLATE NOCASE,m.season,m.episode,m.title COLLATE NOCASE""",
@@ -137,7 +138,14 @@ def create_app(config=None):
         elif view == "continue":
             rows = [r for r in rows if r["position"] > 0 and not r["watched"]]
         rows = [decorate(row) for row in rows]
-        continuing = [row.copy() for row in rows if row["position"] > 0 and not row["watched"]]
+        continuing = []
+        continuing_series = set()
+        for row in sorted(rows, key=lambda row: (row["progress_updated_at"], row["id"]), reverse=True):
+            if row["position"] <= 0 or row["watched"] or (row["series"] and row["series"] in continuing_series):
+                continue
+            if row["series"]:
+                continuing_series.add(row["series"])
+            continuing.append(row.copy())
         for item in continuing:
             item["href"] = url_for("watch", media_id=item["id"])
         shows = {}
@@ -235,9 +243,10 @@ def create_app(config=None):
             # Auto-completion is sticky; only an explicit Mark unwatched clears it.
             old = db.execute("SELECT watched FROM progress WHERE media_id=?", (media_id,)).fetchone()
             complete = watched if watched is not None else bool((old and old[0]) or (duration > 0 and position / duration >= .95))
-            db.execute("""INSERT INTO progress(media_id,position,duration,watched) VALUES(?,?,?,?)
+            db.execute("""INSERT INTO progress(media_id,position,duration,watched,updated_at) VALUES(?,?,?,?,?)
                 ON CONFLICT(media_id) DO UPDATE SET position=excluded.position,duration=excluded.duration,
-                watched=excluded.watched,updated_at=CURRENT_TIMESTAMP""", (media_id, position, duration, complete))
+                watched=excluded.watched,updated_at=excluded.updated_at""",
+                (media_id, position, duration, complete, datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S.%f")))
         return jsonify(ok=True)
 
     @app.get("/admin")

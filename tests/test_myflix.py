@@ -4,6 +4,7 @@ import re
 import tempfile
 import time
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -207,6 +208,39 @@ class MyFlixTest(unittest.TestCase):
         other.mkdir()
         self.post("/admin/settings", {"videos_path": str(other)})
         self.assertEqual(unwatched_ids(), [])
+
+    def test_continue_watching_shows_last_played_episode_per_series(self):
+        self.configure()
+        for name in ("Show.S01E01.mp4", "Show.S01E02.mp4", "Other.S01E01.mp4", "Film.mp4", "Another.Film.mp4"):
+            self.video(name)
+        scan(self.database)
+        with connect(self.database) as db:
+            ids = {row["path"]: row["id"] for row in db.execute("SELECT id,path FROM media")}
+        first, second = ids["Show.S01E01.mp4"], ids["Show.S01E02.mp4"]
+        other, film, another = ids["Other.S01E01.mp4"], ids["Film.mp4"], ids["Another.Film.mp4"]
+        # Watch the lower-numbered episode last within the same second.
+        with patch("myflix.app.datetime") as clock:
+            for index, media_id in enumerate((second, other, film, another, first)):
+                clock.now.return_value = datetime(2026, 11, 1, 12, 0, 0, index + 1, tzinfo=timezone.utc)
+                self.post(f"/api/progress/{media_id}", body={"position": 30, "duration": 100})
+
+        def continuing(url):
+            home = self.client.get(url).data.decode()
+            shelf = re.search(r'<h2>Continue watching</h2>(.*?)</section>', home, re.S)
+            return re.findall(r'data-media-id="(\d+)"', shelf[1]) if shelf else []
+
+        self.assertEqual(continuing("/"), list(map(str, (first, another, film, other))))
+        self.assertEqual(continuing("/?view=continue"), list(map(str, (first, another, film, other))))
+        self.assertEqual(continuing("/?q=Show"), [str(first)])
+        self.assertEqual(continuing("/?view=series"), list(map(str, (first, other))))
+        self.assertEqual(continuing("/?view=movies"), list(map(str, (another, film))))
+        with connect(self.database) as db:
+            self.assertEqual(db.execute("SELECT position FROM progress WHERE media_id=?", (second,)).fetchone()[0], 30)
+            db.execute("UPDATE media SET hidden=1 WHERE id=?", (first,))
+        self.assertEqual(continuing("/?q=Show"), [str(second)], "hidden episodes stay out of Continue watching")
+        with connect(self.database) as db:
+            db.execute("UPDATE media SET available=0 WHERE id=?", (second,))
+        self.assertEqual(continuing("/?q=Show"), [])
 
     def test_admin_sections_search_and_action_destinations(self):
         self.configure()
