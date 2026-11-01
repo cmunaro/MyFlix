@@ -17,9 +17,9 @@ def validate_limits(downloads, processing):
     try:
         values = int(downloads), int(processing)
     except (TypeError, ValueError):
-        raise ValueError("Download and processing limits must be whole numbers from 1 to 10") from None
+        raise ValueError("Job and processing limits must be whole numbers from 1 to 10") from None
     if any(not 1 <= value <= 10 for value in values):
-        raise ValueError("Download and processing limits must be whole numbers from 1 to 10")
+        raise ValueError("Job and processing limits must be whole numbers from 1 to 10")
     return values
 
 
@@ -83,25 +83,11 @@ def install_tools(state, processing):
 
 
 class DownloadStages:
-    """Return a network permit before waiting for the bounded processing stage."""
-    def __init__(self, acquire, release, processing):
-        self.acquire_network = acquire
-        self.release_network = release
-        self.local = threading.local()
+    """Bound processing within jobs that retain their scheduler slot throughout."""
+    def __init__(self, processing):
         self.processing = threading.BoundedSemaphore(processing)
 
-    def acquire(self):
-        if not getattr(self.local, "network", False):
-            self.acquire_network()
-            self.local.network = True
-
-    def release(self):
-        if getattr(self.local, "network", False):
-            self.local.network = False
-            self.release_network()
-
     def finish(self, work, cancelled, waiting):
-        self.release()
         waiting()
         while not self.processing.acquire(timeout=0.2):
             if cancelled():
@@ -116,16 +102,14 @@ class DownloadStages:
 
 class PriorityDownloads:
     """Admit queued retries before ordinary jobs, without preempting running work."""
-    def __init__(self, limit, stages, active_changed, database=None):
+    def __init__(self, limit, active_changed, database=None):
         self.limit = limit
-        self.stages = stages
         self.active_changed = active_changed
         self.condition = threading.Condition()
         self.local = threading.local()
         self.pending = []
         self.sequence = 0
         self.active = 0
-        self.busy = 0
         self.stopped = False
         self.workers = []
         self.database = database
@@ -161,62 +145,34 @@ class PriorityDownloads:
             self.sequence += 1
             self.retry_check_at = 0
             if not self.workers:
-                # Match the pinned engine's existing worker bound.
-                for index in range(10):
+                for index in range(self.limit):
                     worker = threading.Thread(target=self.run, name=f"DownloadWorker-{index}", daemon=True)
                     self.workers.append(worker)
                     worker.start()
             self.condition.notify_all()
         return future
 
-    def acquire(self):
-        with self.condition:
-            if getattr(self.local, "network", False):
-                return
-            # If every worker is busy, a running season must be able to finish
-            # before a worker can pick up a queued retry.
-            while self.active >= self.limit or (self.pending and self.busy < len(self.workers)
-                                                and self.pending[0][0] < getattr(self.local, "rank", 1)):
-                self.condition.wait()
-            self.local.network = True
-            self.active += 1
-            self.active_changed(self.active)
-
-    def release(self):
-        with self.condition:
-            if getattr(self.local, "network", False):
-                self.local.network = False
-                self.active -= 1
-                self.active_changed(self.active)
-                self.retry_check_at = 0
-                self.condition.notify_all()
-
     def run(self):
         while True:
             with self.condition:
-                while (not self.pending or self.active >= self.limit
-                       or (self.pending[0][0] == 1 and self.ordinary_blocked())):
+                while (not self.pending or (self.pending[0][0] == 1 and self.ordinary_blocked())):
                     if self.stopped and not self.pending:
                         return
                     self.condition.wait(timeout=1)
-                rank, _, future, work = heapq.heappop(self.pending)
+                _, _, future, work = heapq.heappop(self.pending)
                 if not future.set_running_or_notify_cancel():
                     continue
-                self.local.rank = rank
-                self.busy += 1
-                self.local.network = True
                 self.active += 1
                 self.active_changed(self.active)
             try:
-                self.stages.acquire()
                 future.set_result(work())
             except BaseException as error:
                 future.set_exception(error)
             finally:
-                self.stages.release()
-                self.release()
                 with self.condition:
-                    self.busy -= 1
+                    self.active -= 1
+                    self.active_changed(self.active)
+                    self.retry_check_at = 0
                     self.condition.notify_all()
 
     def shutdown(self, wait=True):
@@ -237,9 +193,8 @@ def install_stages(downloads, processing, *, database=None):
     from VibraVid.core.ui.tracker import context_tracker
 
     infrastructure.set_max_download_slots(downloads)
-    stages = DownloadStages(None, None, processing)
-    scheduler = PriorityDownloads(downloads, stages, lambda count: setattr(infrastructure, "_active_downloads", count), database)
-    stages.acquire_network, stages.release_network = scheduler.acquire, scheduler.release
+    stages = DownloadStages(processing)
+    scheduler = PriorityDownloads(downloads, lambda count: setattr(infrastructure, "_active_downloads", count), database)
     infrastructure.download_executor.shutdown(wait=True)
     infrastructure.download_executor = scheduler
     infrastructure._submit_download_task = _shared._submit_download_task = scheduler.submit
@@ -253,12 +208,13 @@ def install_stages(downloads, processing, *, database=None):
     _shared._add_scheduled_download = schedule
     # _shared imports these functions by value. Replace both owners together.
     def acquire():
-        stages.acquire()
         context_tracker.no_livemux = True
         context_tracker.no_live_decrypt = True
 
     infrastructure._acquire_download_slot = _shared._acquire_download_slot = acquire
-    infrastructure._release_download_slot = _shared._release_download_slot = stages.release
+    # The scheduler owns each job's slot until its callable returns, including
+    # all episodes, processing, hooks, cancellation, and error cleanup.
+    infrastructure._release_download_slot = _shared._release_download_slot = lambda: None
     precheck = BaseDownloader._precheck
     merge = BaseDownloader._merge_files
     finish = BaseDownloader._finalize
@@ -266,8 +222,6 @@ def install_stages(downloads, processing, *, database=None):
     ytdlp_start = YTDLPDownloader.start
 
     def prepare(downloader, *args, **kwargs):
-        # A season task reuses its worker for subsequent episodes; every episode
-        # must reacquire a network permit after the previous processing stage.
         acquire()
         return precheck(downloader, *args, **kwargs)
 

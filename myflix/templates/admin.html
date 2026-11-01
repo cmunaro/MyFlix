@@ -63,14 +63,14 @@
 {% else %}
 <section class="admin-panel" aria-labelledby="download-limits-heading">
   <div class="panel-heading"><h2 id="download-limits-heading">Download and processing limits</h2><span class="section-tag">PERFORMANCE</span></div>
-  <p>Download videos in parallel while limiting conversion and muxing work.</p>
+  <p>Limit total working jobs and how many of those can process video at once.</p>
   <form method="post" action="{{ url_for('save_download_limits') }}" class="settings-form">
     <input type="hidden" name="csrf" value="{{ session.csrf }}">
-    <label>Simultaneous downloads<input type="number" name="download_limit" min="1" max="10" value="{{ config.download_limit }}" required></label>
+    <label>Simultaneous jobs<input type="number" name="download_limit" min="1" max="10" value="{{ config.download_limit }}" required><small>Counts downloading, waiting for processing, processing, and saving to the library.</small></label>
     <label>Simultaneous processing jobs<input type="number" name="processing_limit" min="1" max="10" value="{{ config.processing_limit }}" required></label>
     <button class="primary">Save limits</button>
   </form>
-  <p class="panel-note">Default: 4 downloads and 1 processing job. Changes apply after restarting MyFlix. Finished downloads wait for processing, then appear in the library. Higher limits use more RAM and temporary disk space.</p>
+  <p class="panel-note">Default: 4 total jobs, with up to 1 processing at a time. Changes apply after restarting MyFlix. A job keeps its slot until it finishes saving to the library. Higher limits use more RAM and temporary disk space.</p>
 </section>
 <section class="admin-panel" aria-labelledby="folder-heading">
   <div class="panel-heading"><h2 id="folder-heading">Library folder</h2><span class="section-tag">STORAGE</span></div>

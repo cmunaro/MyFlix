@@ -60,7 +60,7 @@
         var items = group === 'failed' ? failures : data[group] || [];
         if (!items.length) { return; }
         var section = node('div', undefined, 'queue-group');
-        section.appendChild(node('h3', group === 'retrying' ? 'Priority retries' : group === 'active' ? 'Downloading now' : group === 'scheduled' ? 'Up next' : 'Recent failures'));
+        section.appendChild(node('h3', group === 'retrying' ? 'Priority retries' : group === 'active' ? 'Working jobs' : group === 'scheduled' ? 'Up next' : 'Recent failures'));
         items.forEach(function (item) {
           total += 1;
           var row = node('div', undefined, 'download-job');
@@ -112,7 +112,7 @@
       if (focusedJob !== null) { (restore || document.getElementById('refresh-downloads')).focus(); }
     });
     api('status', null, function (error, data) {
-      connection.textContent = error || ('Download engine connected · ' + data.slots.active + '/' + data.slots.max + ' active · ' + data.queued + ' queued' + (data.disk && data.disk.free !== undefined ? ' · ' + (data.disk.free / 1073741824).toFixed(1) + ' GB free' : ''));
+      connection.textContent = error || ('Download engine connected · ' + data.slots.active + '/' + data.slots.max + ' working jobs · ' + data.queued + ' queued' + (data.disk && data.disk.free !== undefined ? ' · ' + (data.disk.free / 1073741824).toFixed(1) + ' GB free' : ''));
     });
   }
   function resultCard(item) {

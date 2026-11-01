@@ -1,12 +1,27 @@
 #!/usr/bin/env python3
 """VibraVid post_download hook: publish completed files without moving originals."""
 import argparse
+import ctypes
 import errno
 import os
 import shutil
 import sqlite3
 import tempfile
 from pathlib import Path
+
+
+def _rename_no_replace(source, target):
+    """Publish on Linux filesystems such as exFAT without replacing any entry."""
+    libc = ctypes.CDLL(None, use_errno=True)
+    rename = getattr(libc, "renameat2", None)
+    if rename is None:
+        raise OSError(errno.ENOSYS, "Atomic no-replace rename is unavailable", str(target))
+    rename.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
+    rename.restype = ctypes.c_int
+    # AT_FDCWD, RENAME_NOREPLACE. Never fall back to an overwriting rename.
+    if rename(-100, os.fsencode(source), -100, os.fsencode(target), 1):
+        code = ctypes.get_errno()
+        raise OSError(code, os.strerror(code), str(target))
 
 
 def publish(source, downloads, library):
@@ -21,20 +36,10 @@ def publish(source, downloads, library):
     if not target.parent.resolve().is_relative_to(library):
         raise ValueError("Destination escapes the library")
     target.parent.mkdir(parents=True, exist_ok=True)
-    # Hard links are atomic and cost no extra space. Never overwrite a library
-    # file: replacing a title is an explicit administrator operation.
-    try:
-        os.link(source, target)
-        return target
-    except FileExistsError:
-        if os.path.samefile(source, target):
-            return target
+    if target.exists() or target.is_symlink():
         raise FileExistsError(f"Library file already exists: {target}")
-    except OSError as error:
-        if error.errno != errno.EXDEV:
-            raise
-    # Across filesystems, copy under a hidden temporary name then atomically link
-    # into view. Even concurrent hooks cannot expose a partial file or overwrite.
+    # Store independent bytes on the configured library filesystem. The hidden
+    # copy becomes visible only when complete; never replace an existing entry.
     temporary = None
     try:
         with tempfile.NamedTemporaryFile(prefix=".myflix-", dir=target.parent, delete=False) as output:
@@ -44,7 +49,7 @@ def publish(source, downloads, library):
             output.flush()
             os.fsync(output.fileno())
         shutil.copystat(source, temporary)
-        os.link(temporary, target)
+        _rename_no_replace(temporary, target)
     finally:
         if temporary:
             temporary.unlink(missing_ok=True)

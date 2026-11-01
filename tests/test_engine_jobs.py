@@ -30,9 +30,7 @@ class JobLimitsTest(unittest.TestCase):
             with connect(database) as db:
                 root = settings(db)["videos_path"]
                 db.execute("INSERT INTO download_retries(root,source_key,source,body) VALUES(?,'failure','{}','{}')", (root,))
-            stages = DownloadStages(None, None, 1)
-            scheduler = PriorityDownloads(1, stages, lambda count: None, database)
-            stages.acquire_network, stages.release_network = scheduler.acquire, scheduler.release
+            scheduler = PriorityDownloads(1, lambda count: None, database)
             ordinary_started = threading.Event()
             try:
                 ordinary = scheduler.submit(ordinary_started.set)
@@ -47,34 +45,35 @@ class JobLimitsTest(unittest.TestCase):
             finally:
                 scheduler.shutdown()
 
-    def test_full_worker_pool_can_finish_running_season_tasks_before_retry(self):
-        stages = DownloadStages(None, None, 1)
-        scheduler = PriorityDownloads(1, stages, lambda count: None)
-        stages.acquire_network, stages.release_network = scheduler.acquire, scheduler.release
-        all_started = threading.Barrier(11)
-        release = threading.Event()
+    def test_running_season_keeps_one_job_slot_through_all_episodes(self):
+        stages = DownloadStages(1)
+        scheduler = PriorityDownloads(1, lambda count: None)
+        started, release, retry_started = threading.Event(), threading.Event(), threading.Event()
+        order = []
         def season():
-            stages.release()
-            all_started.wait(3)
-            release.wait(3)
-            stages.acquire()
+            for episode in range(3):
+                stages.finish(lambda: order.append(episode), lambda: False, lambda: None)
+                if episode == 0:
+                    started.set()
+                    release.wait(3)
         try:
-            normal = [scheduler.submit(season) for _ in range(10)]
-            all_started.wait(3)
+            first = scheduler.submit(season)
+            self.assertTrue(started.wait(1))
             with scheduler.prioritize():
-                retry = scheduler.submit(lambda: "retry")
+                retry = scheduler.submit(retry_started.set)
+            self.assertFalse(retry_started.wait(.1))
+            self.assertEqual(scheduler.active, 1)
             release.set()
-            self.assertEqual(retry.result(timeout=3), "retry")
-            for future in normal:
-                future.result(timeout=3)
+            first.result(timeout=3)
+            retry.result(timeout=3)
+            self.assertEqual(order, [0, 1, 2])
         finally:
             release.set()
             scheduler.shutdown()
 
     def test_priority_retries_start_before_ordinary_waiting_downloads(self):
-        stages = DownloadStages(None, None, 1)
-        scheduler = PriorityDownloads(1, stages, lambda count: None)
-        stages.acquire_network, stages.release_network = scheduler.acquire, scheduler.release
+        stages = DownloadStages(1)
+        scheduler = PriorityDownloads(1, lambda count: None)
         started, release = threading.Event(), threading.Event()
         order = []
         def running():
@@ -96,10 +95,9 @@ class JobLimitsTest(unittest.TestCase):
             release.set()
             scheduler.shutdown()
 
-    def test_priority_scheduler_releases_network_while_processing_and_after_failure(self):
-        stages = DownloadStages(None, None, 1)
-        scheduler = PriorityDownloads(1, stages, lambda count: None)
-        stages.acquire_network, stages.release_network = scheduler.acquire, scheduler.release
+    def test_processing_holds_job_slot_and_failure_releases_it(self):
+        stages = DownloadStages(1)
+        scheduler = PriorityDownloads(1, lambda count: None)
         processing, release, retry_started = threading.Event(), threading.Event(), threading.Event()
         def finish():
             processing.set()
@@ -110,66 +108,64 @@ class JobLimitsTest(unittest.TestCase):
             self.assertTrue(processing.wait(1))
             with scheduler.prioritize():
                 retry = scheduler.submit(retry_started.set)
-            self.assertTrue(retry_started.wait(1), "muxing must not hold a network permit")
-            retry.result(timeout=2)
+            self.assertFalse(retry_started.wait(.1), "processing must retain the job slot")
+            self.assertEqual(scheduler.active, 1)
             release.set()
             with self.assertRaisesRegex(RuntimeError, "merge failure"):
                 first.result(timeout=2)
+            retry.result(timeout=2)
             self.assertEqual(scheduler.submit(lambda: "next").result(timeout=2), "next")
         finally:
             release.set()
             scheduler.shutdown()
 
-    def test_four_downloads_overlap_and_processing_does_not_hold_network_slots(self):
-        network = threading.BoundedSemaphore(4)
-        stages = DownloadStages(network.acquire, network.release, 1)
+    def test_four_working_jobs_include_processing_waiters_and_library_publication(self):
+        stages = DownloadStages(1)
+        scheduler = PriorityDownloads(4, lambda count: None)
         downloaded = threading.Barrier(5)
-        finish = threading.Event()
-        processing = threading.Event()
-        waiting = threading.Event()
-        counts = {"active": 0, "peak": 0}
+        finish, processing, published = threading.Event(), threading.Event(), threading.Event()
+        counts = {"processing": 0, "peak": 0, "waiting": 0}
         lock = threading.Lock()
-        failures = []
+        fifth_started = threading.Event()
         def work():
             with lock:
-                counts["active"] += 1
-                counts["peak"] = max(counts["peak"], counts["active"])
+                counts["processing"] += 1
+                counts["peak"] = max(counts["peak"], counts["processing"])
             processing.set()
             finish.wait(4)
             with lock:
-                counts["active"] -= 1
+                counts["processing"] -= 1
+        def waiting():
+            with lock:
+                counts["waiting"] += 1
         def task():
-            try:
-                stages.acquire()
-                stages.acquire()  # Per-episode precheck must not double acquire.
-                downloaded.wait(4)
-                stages.finish(work, lambda: False, waiting.set)
-                stages.acquire()  # The next episode reacquires its network slot.
-            except Exception as error:
-                failures.append(error)
-            finally:
-                stages.release()
-                stages.release()  # Upstream finally may release an early return.
-        threads = [threading.Thread(target=task) for _ in range(4)]
-        for thread in threads:
-            thread.start()
+            downloaded.wait(4)
+            stages.finish(work, lambda: False, waiting)
+            published.wait(4)  # The completion hook still owns the job slot.
         try:
-            downloaded.wait(4)  # All four reached the download stage together.
+            jobs = [scheduler.submit(task) for _ in range(4)]
+            downloaded.wait(4)
+            fifth = scheduler.submit(fifth_started.set)
             self.assertTrue(processing.wait(2))
-            self.assertTrue(waiting.wait(2))
-            wait_for(lambda: network._value == 4)
-            stages.acquire()  # Another download can start during processing.
-            stages.release()
+            wait_for(lambda: counts["waiting"] == 4)
+            self.assertEqual(scheduler.active, 4)
+            self.assertEqual(len(scheduler.pending), 1)
+            self.assertFalse(fifth_started.wait(.1))
+            finish.set()
+            wait_for(lambda: counts["processing"] == 0)
+            self.assertFalse(fifth_started.wait(.1), "publication must retain job slots")
+            published.set()
+            for future in jobs + [fifth]:
+                future.result(timeout=3)
+            wait_for(lambda: scheduler.active == 0)
+            self.assertEqual(counts["peak"], 1)
         finally:
             finish.set()
-            for thread in threads:
-                thread.join(4)
-        self.assertEqual(failures, [])
-        self.assertEqual(counts["peak"], 1)
-        self.assertEqual(network._value, 4)
+            published.set()
+            scheduler.shutdown()
 
     def test_cancellation_and_processing_errors_release_permits(self):
-        stages = DownloadStages(lambda: None, lambda: None, 1)
+        stages = DownloadStages(1)
         stages.processing.acquire()
         cancelled = threading.Event()
         errors = []
@@ -196,6 +192,8 @@ class JobLimitsTest(unittest.TestCase):
             client = app.test_client()
             page = client.get("/admin?section=settings")
             self.assertIn(b'name="download_limit"', page.data)
+            self.assertIn(b"Simultaneous jobs", page.data)
+            self.assertNotIn(b"Simultaneous downloads", page.data)
             self.assertIn(b'name="processing_limit"', page.data)
             with client.session_transaction() as session:
                 csrf = session["csrf"]

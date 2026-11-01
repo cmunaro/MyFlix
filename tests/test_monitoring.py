@@ -266,10 +266,16 @@ class MonitoringTest(unittest.TestCase):
         with patch.object(self.provider, "call", side_effect=call):
             self.follow(automatic=True)
             self.assertEqual(len(self.provider.queue["scheduled"]), 4)
+            self.provider.queue["active"] = self.provider.queue.pop("scheduled")
+            self.provider.queue["scheduled"] = []
+            for item, status in zip(self.provider.queue["active"],
+                                    ("downloading", "Processing", "Waiting for processing", "Waiting for processing")):
+                item["status"] = status
             self.monitor.tick()
-            self.assertEqual(len(self.provider.queue["scheduled"]), 5)
+            self.assertEqual(len(self.provider.queue["scheduled"]), 0)
+            self.provider.queue["active"].pop()
             self.monitor.tick()
-            self.assertEqual(len(self.provider.queue["scheduled"]), 5)
+            self.assertEqual(len(self.provider.queue["scheduled"]), 1)
         self.assertEqual([body["episodes"] for action, body in self.provider.calls if action == "download"], ["1", "2", "3", "4", "5"])
 
     def test_queue_matching_covers_episode_numbers_ranges_and_ambiguous_series(self):
@@ -609,10 +615,10 @@ class MonitoringTest(unittest.TestCase):
         with patch.object(self.provider, "call", side_effect=call):
             self.monitor.tick()
             self.monitor.tick()
-        self.assertEqual(len([a for a, _ in self.provider.calls if a == "retry_download"]), 2)
-        self.assertEqual([r["state"] for r in self.discoveries()], ["submitted", "submitted", "retry_pending", "retry_pending"])
+        self.assertEqual(len([a for a, _ in self.provider.calls if a == "retry_download"]), 1)
+        self.assertEqual([r["state"] for r in self.discoveries()], ["submitted", "retry_pending", "retry_pending", "retry_pending"])
         presented = self.monitor.retries.present(copy.deepcopy(self.provider.queue))
-        self.assertEqual([item["priority"] for item in presented["scheduled"]], [True, True, False])
+        self.assertEqual([item["priority"] for item in presented["scheduled"]], [True, False])
 
     def test_bulk_retry_uncertain_send_is_not_repeated_and_new_failure_reappears(self):
         self.failed_downloads()

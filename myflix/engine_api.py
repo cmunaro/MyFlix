@@ -6,6 +6,21 @@ import os
 from .db import connect
 
 
+def install_download_adapter(bot):
+    """Exact episodes need no all-season expansion before queue registration."""
+    enqueue = bot._run_download_in_thread
+
+    def download(site, payload, season=None, episodes=None, *args, **kwargs):
+        if str(season or "").isdigit() and str(episodes or "").isdigit():
+            # The pinned helper otherwise scrapes every season synchronously,
+            # exceeding the HTTP budget before registering even one episode.
+            # The download worker still resolves and validates the actual media.
+            kwargs.setdefault("_metadata", [])
+        return enqueue(site, payload, season, episodes, *args, **kwargs)
+
+    bot._run_download_in_thread = download
+
+
 def report_metadata(database, token, done, total, episodes, season=0):
     """Only the current live lookup may publish progress to its subscription."""
     with connect(database) as db:
@@ -58,8 +73,11 @@ def install():
     from django.views.decorators.http import require_POST
     from searchapp.api import get_api
     from searchapp.api.base import Entries
+    from searchapp import api_bot
     from searchapp.api_bot import _json_body, require_bot_secret, bot_download
     from webgui.urls import urlpatterns
+
+    install_download_adapter(api_bot)
 
     @csrf_exempt
     @require_bot_secret

@@ -166,7 +166,7 @@ class DownloadRetries:
                 return
             pending = db.execute("SELECT * FROM download_retries WHERE root=? AND state='pending' ORDER BY id", (root,)).fetchall()
             ids = {row[0] for row in db.execute("SELECT download_id FROM download_retries WHERE root=? AND state='submitted'", (root,))}
-            capacity = min(10, int(config["download_limit"]) + int(config["processing_limit"]))
+            capacity = int(config["download_limit"])
         waiting = sum(bool(job.get("priority") or job.get("id") in ids or job.get("parent_id") in ids)
                       for job in queue["active"] + queue["scheduled"])
         for retry in pending[:max(0, capacity - waiting)]:

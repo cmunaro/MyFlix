@@ -259,7 +259,7 @@ class SeriesMonitor:
                 raise ValueError("This episode is already in the library")
             if automatic:
                 config = settings(db)
-                capacity = min(10, int(config["download_limit"]) + int(config["processing_limit"]))
+                capacity = int(config["download_limit"])
                 if len(queue["active"]) + len(queue["scheduled"]) >= capacity:
                     return False
                 if (subscription["mode"] != "auto" or discovery["state"] != "new" or not discovery["listed"]

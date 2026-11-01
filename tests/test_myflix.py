@@ -1,6 +1,7 @@
 import errno
 import os
 import re
+import sys
 import tempfile
 import time
 import unittest
@@ -404,16 +405,14 @@ class MyFlixTest(unittest.TestCase):
         self.assertEqual(target.read_bytes(), b"completed")
 
         self.assertTrue(source.exists())
-        self.assertEqual(publish(source, downloads, self.library), target)
+        self.assertFalse(os.path.samefile(source, target))
+        source.write_bytes(b"staging changed")
+        self.assertEqual(target.read_bytes(), b"completed")
+        with self.assertRaises(FileExistsError):
+            publish(source, downloads, self.library)
         source2 = downloads / "Movie.mp4"
         source2.write_bytes(b"second")
-        real_link = os.link
-        def cross_device(src, dst):
-            if Path(src) == source2:
-                raise OSError(errno.EXDEV, "different filesystems")
-            return real_link(src, dst)
-        with patch("deploy.vibravid_publish.os.link", side_effect=cross_device):
-            self.assertEqual(publish(source2, downloads, self.library).read_bytes(), b"second")
+        self.assertEqual(publish(source2, downloads, self.library).read_bytes(), b"second")
         with self.assertRaises(ValueError):
             publish(target, downloads, self.library)
         with self.assertRaises(ValueError):
@@ -435,6 +434,47 @@ class MyFlixTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             publish(source, downloads, self.library)
         self.assertFalse((outside / "Season 1").exists())
+
+    @unittest.skipUnless(sys.platform == "linux", "Linux no-replace rename")
+    def test_completion_hook_without_hard_links_never_overwrites(self):
+        downloads = self.base / "downloads"
+        downloads.mkdir()
+        source = downloads / "episode.mp4"
+        source.write_bytes(b"complete")
+        for code in (errno.EPERM, errno.EOPNOTSUPP):
+            with self.subTest(errno=code):
+                target = self.library / source.name
+                with patch("deploy.vibravid_publish.os.link", side_effect=AssertionError("Must not create hard links")) as link:
+                    self.assertEqual(publish(source, downloads, self.library), target)
+                    self.assertEqual(target.read_bytes(), b"complete")
+                    self.assertEqual(source.read_bytes(), b"complete")
+                    with self.assertRaises(FileExistsError):
+                        publish(source, downloads, self.library)
+                    link.assert_not_called()
+                self.assertEqual(target.read_bytes(), b"complete")
+                self.assertEqual(list(self.library.glob(".myflix-*")), [])
+                target.unlink()
+
+    @unittest.skipUnless(sys.platform == "linux", "Linux no-replace rename")
+    def test_completion_hook_rename_race_preserves_existing_video(self):
+        from deploy.vibravid_publish import _rename_no_replace
+        downloads = self.base / "downloads"
+        downloads.mkdir()
+        source = downloads / "episode.mp4"
+        source.write_bytes(b"new")
+        target = self.library / source.name
+
+        def competing_publish(temporary, destination):
+            self.assertEqual(Path(temporary).read_bytes(), b"new")
+            target.write_bytes(b"existing")
+            _rename_no_replace(temporary, destination)
+
+        with patch("deploy.vibravid_publish._rename_no_replace", side_effect=competing_publish):
+            with self.assertRaises(FileExistsError):
+                publish(source, downloads, self.library)
+        self.assertEqual(target.read_bytes(), b"existing")
+        self.assertEqual(source.read_bytes(), b"new")
+        self.assertEqual(list(self.library.glob(".myflix-*")), [])
 
     def test_hook_publishes_local_artwork_after_success_only(self):
         downloads = self.base / "downloads"

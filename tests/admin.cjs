@@ -133,6 +133,7 @@ assert.equal(columns.document.activeElement, columns.refresh, 'vertical movement
 ui.downloads();
 ui.reply('sites', {groups: [{label: 'Providers', options: [{value: '__all__', label: 'All providers'}]}]});
 ui.reply('status', {slots: {active: 1, max: 1}, queued: 0});
+assert(ui.el('download-connection').textContent.includes('1/1 working jobs'), 'status counts all working jobs');
 const active = {active: [{id: 'job-1', title: 'I Simpson', type: 'Serie', season: 2, episode: 7, status: 'Downloading', progress: 40}], history: [{title: 'Old completed film'}]};
 ui.reply('queue', active);
 assert(ui.el('download-queue').textContent.includes('Season 2 · Episode 7'), 'active download identifies the actual season and episode');
@@ -224,7 +225,7 @@ errors.reply('queue', {history: [], active: [{id: 'normal', title: 'Normal film'
 ]});
 errors.reply('status', {slots: {active: 1, max: 4}, queued: 0});
 const retriedText = errors.el('download-queue').textContent;
-assert(retriedText.indexOf('Priority retries') < retriedText.indexOf('Downloading now'), 'pending retries are at the top');
+assert(retriedText.indexOf('Priority retries') < retriedText.indexOf('Working jobs'), 'pending retries are at the top');
 assert(!retriedText.includes('Recent failures') && !retriedText.includes('Merge failed'), 'retried failures are removed');
 assert(retryAll.hidden, 'bulk retry hides once failures have moved into the queue');
 assert.equal(errors.document.activeElement, errors.refresh, 'focus moves to Refresh when the action disappears');

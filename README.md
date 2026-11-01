@@ -77,6 +77,8 @@ In **Downloads**, find a series, set **Library series name** to its existing cat
 
 Following can catch up on existing episodes as well as discover new ones. In **Following**, pause monitoring or choose notification-only mode. Use **mark a season watched & exclude downloads** to skip seasons you have already seen. Notifications stay inside MyFlix.
 
+Single-episode download requests queue without repeating the all-season lookup; the download worker resolves the requested episode. Season and episode-range selections retain the engine's metadata expansion.
+
 Failed downloads appear with season, episode, and error details in Downloads. Following retains confirmed episode failures and provides a **Retry failed episode** action. **Retry all failed downloads** moves eligible failures out of Recent failures into a persistent priority queue. Retries start ahead of ordinary queued downloads, while running jobs finish normally. A retry that fails again returns with its new error. After each server restart, MyFlix automatically queues confirmed eligible failures once, after the first successful library scan. Failures from that recovery remain visible until you retry them or restart again. If a download request times out, check the queue before retrying. MyFlix does not automatically retry uncertain download submissions. Provider availability, accounts, and any required optional modules depend on the upstream provider.
 
 ## Use your TV remote
@@ -147,13 +149,15 @@ sudo journalctl -u myflix -f
 curl http://127.0.0.1:8090/health
 ```
 
-Download and processing limits are configurable in **Settings** and apply after restart. Defaults are four downloads and one processing job. Higher limits use more RAM, bandwidth, and temporary disk space; tune them for your hardware. Engine helper binaries are obtained on demand, and their availability on Raspberry Pi needs validation on the target.
+Job and processing limits are configurable in **Settings** and apply after restart. **Simultaneous jobs** caps all working jobs combined: downloading, waiting for processing, processing, and saving to the library. Defaults are four total jobs, with at most one processing at a time. Higher limits use more RAM, bandwidth, and temporary disk space; tune them for your hardware. Engine helper binaries are obtained on demand, and their availability on Raspberry Pi needs validation on the target.
 
 ## Data, backups, and updates
 
 Local runs store state under `./data` by default; set `MYFLIX_DATA` to use another location. `MYFLIX_HOST` and `MYFLIX_PORT` control the listening address and port, defaulting to `0.0.0.0:8090`.
 
-SQLite stores catalog edits, settings, follows, exclusions, and household watch history. Completed media lives in the library folder chosen in admin. Successful downloads are published atomically; existing videos are never overwritten. Staging originals remain and can continue to occupy disk space.
+SQLite stores catalog edits, settings, follows, exclusions, and household watch history. Completed media is copied into the library folder chosen in admin as independent files, without hard links or symbolic links to staging. Successful downloads are published atomically; existing videos are never overwritten. Staging originals remain and can continue to occupy disk space.
+
+On Linux, library drives using exFAT are supported through an atomic no-replace rename after copying the completed file. The library drive must be mounted read/write. If it becomes read-only, check the filesystem and mount before retrying publication; completed downloads remain in staging.
 
 To back up, stop MyFlix and copy the entire data directory, including any SQLite `-wal` and `-shm` files, then restart. Back up media separately. Keep backups private: the data directory also contains internal secrets and provider login files.
 
