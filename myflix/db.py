@@ -74,8 +74,26 @@ def initialize(path):
                 listed INTEGER NOT NULL DEFAULT 1,
                 PRIMARY KEY(subscription_id,season,episode)
             );
+            CREATE TABLE IF NOT EXISTS download_requests (
+                root TEXT NOT NULL, download_id TEXT NOT NULL, body TEXT NOT NULL,
+                PRIMARY KEY(root,download_id)
+            );
+            CREATE TABLE IF NOT EXISTS download_retries (
+                id INTEGER PRIMARY KEY, root TEXT NOT NULL, source_key TEXT NOT NULL,
+                source TEXT NOT NULL, body TEXT NOT NULL,
+                state TEXT NOT NULL DEFAULT 'pending', download_id TEXT NOT NULL DEFAULT '',
+                submitted_at REAL NOT NULL DEFAULT 0, error TEXT NOT NULL DEFAULT '',
+                failure TEXT NOT NULL DEFAULT '', UNIQUE(root,source_key)
+            );
+            CREATE INDEX IF NOT EXISTS download_retries_pending ON download_retries(root,state,id);
         """)
         db.execute("BEGIN IMMEDIATE")
+        columns = {row["name"] for row in db.execute("PRAGMA table_info(discoveries)")}
+        for name, definition in (("error", "TEXT NOT NULL DEFAULT ''"),
+                                 ("download_id", "TEXT NOT NULL DEFAULT ''"),
+                                 ("submitted_at", "REAL NOT NULL DEFAULT 0")):
+            if name not in columns:
+                db.execute(f"ALTER TABLE discoveries ADD COLUMN {name} {definition}")
         db.execute("INSERT OR IGNORE INTO settings VALUES('download_limit','4')")
         db.execute("INSERT OR IGNORE INTO settings VALUES('processing_limit','1')")
         if db.execute("PRAGMA user_version").fetchone()[0] < 3:

@@ -8,6 +8,7 @@ import time
 from pathlib import Path
 
 from .db import connect, settings
+from .downloads import DownloadRetries
 from .vibravid import VibraVidError
 
 INTERVAL = 4 * 3600
@@ -84,6 +85,7 @@ class SeriesMonitor:
         self.engine = engine
         self.lock = threading.Lock()
         self.download_lock = threading.Lock()
+        self.retries = DownloadRetries(database)
 
     def check(self, subscription):
         result = self.engine.call("episodes", {"site": subscription["site"], "payload": json.loads(subscription["payload"])})
@@ -120,6 +122,49 @@ class SeriesMonitor:
         with self.download_lock:
             return self._download(subscription_id, season, episode, automatic=automatic, include_watched=include_watched)
 
+    def reconcile_queue(self, queue):
+        """Persist confirmed episode failures without retrying uncertain requests."""
+        if not all(isinstance(queue.get(key), list) for key in ("active", "scheduled", "history")):
+            return
+        if not all(isinstance(job, dict) for key in ("active", "scheduled", "history") for job in queue[key]):
+            return
+        self.retries.reconcile(queue)
+        with self.download_lock, connect(self.database) as db:
+            db.execute("BEGIN IMMEDIATE")
+            pending = db.execute("""SELECT d.*,s.site,s.payload,s.series,s.root FROM discoveries d
+                JOIN subscriptions s ON s.id=d.subscription_id WHERE s.root=?
+                AND d.state IN ('submitted','submitting','uncertain')""", (settings(db)["videos_path"],)).fetchall()
+            for item in pending:
+                name = json.loads(item["payload"]).get("name", item["series"])
+                if episode_status(db, item, item["season"], item["episode"])["available"]:
+                    continue
+                if any(queued_episode(job, item["site"], name, item["season"], item["episode"])
+                       for job in queue["active"] + queue["scheduled"]):
+                    continue
+                matches = []
+                for job in queue["history"]:
+                    # Never infer a terminal outcome from a series-wide/range job.
+                    match = re.search(r" - S(\d+) E(\d+)$", str(job.get("title") or ""))
+                    season = job.get("season") if job.get("season") is not None else (match[1] if match else None)
+                    episode = job.get("episode") if job.get("episode") is not None else (match[2] if match else None)
+                    try:
+                        exact = int(season) == item["season"] and int(episode) == item["episode"]
+                        recent = float(job.get("start_time", 0)) >= item["submitted_at"]
+                        ended = float(job.get("end_time") or job.get("start_time") or 0)
+                    except (ValueError, TypeError):
+                        continue
+                    if (exact and recent and queued_episode(job, item["site"], name, item["season"], item["episode"])
+                            and (not item["download_id"] or job.get("id") == item["download_id"])):
+                        matches.append((ended, job))
+                if not matches:
+                    continue
+                latest = max(matches, key=lambda match: match[0])[1]
+                if latest.get("status") == "failed":
+                    error = str(latest.get("error") or "Download failed; the engine supplied no details.")[:2000]
+                    db.execute("""UPDATE discoveries SET state='failed',error=?
+                        WHERE subscription_id=? AND season=? AND episode=?""",
+                        (error, item["subscription_id"], item["season"], item["episode"]))
+
     def _download(self, subscription_id, season, episode, *, automatic, include_watched):
         # Check individual episodes and season ranges so independent episodes
         # of one followed series can download together without duplicates.
@@ -136,7 +181,7 @@ class SeriesMonitor:
                                    (subscription_id, season, episode)).fetchone()
             if not discovery:
                 raise ValueError("Episode not found")
-            if discovery["state"] in ("submitting", "submitted", "uncertain"):
+            if discovery["state"] in ("submitting", "submitted", "uncertain", "retry_pending"):
                 raise ValueError("Check the download queue before allowing another attempt")
             status = episode_status(db, subscription, season, episode)
             if status["available"]:
@@ -164,27 +209,50 @@ class SeriesMonitor:
                     if automatic:
                         return False
                     raise ValueError("This episode already has queued work. Wait for it to finish.")
-            db.execute("UPDATE discoveries SET state='submitting' WHERE subscription_id=? AND season=? AND episode=?",
-                       (subscription_id, season, episode))
+            db.execute("""UPDATE discoveries SET state='submitting',error='',download_id='',submitted_at=?
+                WHERE subscription_id=? AND season=? AND episode=?""",
+                       (time.time(), subscription_id, season, episode))
         # Commit the reservation before the mutation. A process crash leaves it
         # blocked, never eligible for an automatic retry after an uncertain send.
         state = "uncertain"
+        download_id = ""
         try:
-            result = self.engine.call("download", {"site": subscription["site"], "payload": payload,
-                                                   "season": str(season), "episodes": str(episode)})
+            result = self.retries.submit(self.engine, {"site": subscription["site"], "payload": payload,
+                                                       "season": str(season), "episodes": str(episode)},
+                                         priority=discovery["state"] == "failed", root=subscription["root"])
             if result.get("queued") is not True:
                 raise VibraVidError("Download was not acknowledged. Check the queue before retrying.")
             state = "submitted"
+            if isinstance(result.get("download_id"), str):
+                download_id = result["download_id"][:200]
         finally:
             with connect(self.database) as db:
-                db.execute("UPDATE discoveries SET state=? WHERE subscription_id=? AND season=? AND episode=?",
-                           (state, subscription_id, season, episode))
+                db.execute("UPDATE discoveries SET state=?,download_id=? WHERE subscription_id=? AND season=? AND episode=?",
+                           (state, download_id, subscription_id, season, episode))
         return True
 
     def tick(self):
         if not self.lock.acquire(blocking=False):
             return
         try:
+            with connect(self.database) as db:
+                pending = db.execute("""SELECT 1 FROM discoveries d JOIN subscriptions s ON s.id=d.subscription_id
+                    WHERE s.root=? AND d.state IN ('submitted','submitting','uncertain')
+                    UNION ALL SELECT 1 FROM download_retries WHERE root=? AND state='submitted' LIMIT 1""",
+                    (settings(db)["videos_path"], settings(db)["videos_path"])).fetchone()
+            if pending:
+                try:
+                    self.reconcile_queue(self.engine.call("queue"))
+                except VibraVidError:
+                    logging.warning("Could not check episode download outcomes; previous states retained")
+            if self.retries.pending():
+                try:
+                    with self.download_lock:
+                        self.retries.dispatch(self.engine)
+                except VibraVidError:
+                    logging.warning("Retry submission unconfirmed; inspect the queue before another attempt")
+                if self.retries.pending():
+                    return
             with connect(self.database) as db:
                 subscriptions = db.execute("SELECT * FROM subscriptions WHERE root=? AND mode!='paused'",
                                            (settings(db)["videos_path"],)).fetchall()

@@ -11,7 +11,7 @@ from pathlib import Path
 from myflix.app import create_app
 from myflix.db import connect, initialize, settings
 from myflix.engine import prepare
-from myflix.engine_jobs import DownloadStages, ToolWrappers, read_limits
+from myflix.engine_jobs import DownloadStages, PriorityDownloads, ToolWrappers, read_limits
 
 
 def wait_for(predicate):
@@ -23,6 +23,103 @@ def wait_for(predicate):
 
 
 class JobLimitsTest(unittest.TestCase):
+    def test_durable_retry_backlog_keeps_ordinary_jobs_behind_later_retry_windows(self):
+        with tempfile.TemporaryDirectory() as directory:
+            database = str(Path(directory) / "catalog.sqlite3")
+            create_app({"TESTING": True, "DATABASE": database})
+            with connect(database) as db:
+                root = settings(db)["videos_path"]
+                db.execute("INSERT INTO download_retries(root,source_key,source,body) VALUES(?,'failure','{}','{}')", (root,))
+            stages = DownloadStages(None, None, 1)
+            scheduler = PriorityDownloads(1, stages, lambda count: None, database)
+            stages.acquire_network, stages.release_network = scheduler.acquire, scheduler.release
+            ordinary_started = threading.Event()
+            try:
+                ordinary = scheduler.submit(ordinary_started.set)
+                with scheduler.prioritize():
+                    retry = scheduler.submit(lambda: "priority retry")
+                self.assertEqual(retry.result(timeout=2), "priority retry")
+                self.assertFalse(ordinary_started.is_set(), "SQLite retries retain priority before the next dispatch window")
+                with connect(database) as db:
+                    db.execute("UPDATE download_retries SET state='submitted'")
+                ordinary.result(timeout=3)
+                self.assertTrue(ordinary_started.is_set())
+            finally:
+                scheduler.shutdown()
+
+    def test_full_worker_pool_can_finish_running_season_tasks_before_retry(self):
+        stages = DownloadStages(None, None, 1)
+        scheduler = PriorityDownloads(1, stages, lambda count: None)
+        stages.acquire_network, stages.release_network = scheduler.acquire, scheduler.release
+        all_started = threading.Barrier(11)
+        release = threading.Event()
+        def season():
+            stages.release()
+            all_started.wait(3)
+            release.wait(3)
+            stages.acquire()
+        try:
+            normal = [scheduler.submit(season) for _ in range(10)]
+            all_started.wait(3)
+            with scheduler.prioritize():
+                retry = scheduler.submit(lambda: "retry")
+            release.set()
+            self.assertEqual(retry.result(timeout=3), "retry")
+            for future in normal:
+                future.result(timeout=3)
+        finally:
+            release.set()
+            scheduler.shutdown()
+
+    def test_priority_retries_start_before_ordinary_waiting_downloads(self):
+        stages = DownloadStages(None, None, 1)
+        scheduler = PriorityDownloads(1, stages, lambda count: None)
+        stages.acquire_network, stages.release_network = scheduler.acquire, scheduler.release
+        started, release = threading.Event(), threading.Event()
+        order = []
+        def running():
+            order.append("running")
+            started.set()
+            release.wait(3)
+        try:
+            first = scheduler.submit(running)
+            self.assertTrue(started.wait(1))
+            normal = [scheduler.submit(lambda n=n: order.append(n)) for n in ("normal1", "normal2")]
+            with scheduler.prioritize():
+                retries = [scheduler.submit(lambda n=n: order.append(n)) for n in ("retry1", "retry2")]
+            release.set()
+            for future in [first] + retries + normal:
+                future.result(timeout=3)
+            self.assertEqual(order, ["running", "retry1", "retry2", "normal1", "normal2"])
+            wait_for(lambda: scheduler.active == 0)
+        finally:
+            release.set()
+            scheduler.shutdown()
+
+    def test_priority_scheduler_releases_network_while_processing_and_after_failure(self):
+        stages = DownloadStages(None, None, 1)
+        scheduler = PriorityDownloads(1, stages, lambda count: None)
+        stages.acquire_network, stages.release_network = scheduler.acquire, scheduler.release
+        processing, release, retry_started = threading.Event(), threading.Event(), threading.Event()
+        def finish():
+            processing.set()
+            release.wait(3)
+            raise RuntimeError("merge failure")
+        try:
+            first = scheduler.submit(lambda: stages.finish(finish, lambda: False, lambda: None))
+            self.assertTrue(processing.wait(1))
+            with scheduler.prioritize():
+                retry = scheduler.submit(retry_started.set)
+            self.assertTrue(retry_started.wait(1), "muxing must not hold a network permit")
+            retry.result(timeout=2)
+            release.set()
+            with self.assertRaisesRegex(RuntimeError, "merge failure"):
+                first.result(timeout=2)
+            self.assertEqual(scheduler.submit(lambda: "next").result(timeout=2), "next")
+        finally:
+            release.set()
+            scheduler.shutdown()
+
     def test_four_downloads_overlap_and_processing_does_not_hold_network_slots(self):
         network = threading.BoundedSemaphore(4)
         stages = DownloadStages(network.acquire, network.release, 1)
@@ -117,6 +214,28 @@ class JobLimitsTest(unittest.TestCase):
 
 
 class ProcessLimitTest(unittest.TestCase):
+    def test_tool_shims_keep_their_command_names_and_probe_dispatch(self):
+        with tempfile.TemporaryDirectory(prefix="myflix shims ") as directory:
+            root = Path(directory)
+            dispatcher = root / "mise"
+            dispatcher.write_text(f"#!{sys.executable}\n" + '''import json, sys
+from pathlib import Path
+print(json.dumps([Path(sys.argv[0]).name, sys.argv[1:]]))
+''')
+            dispatcher.chmod(0o700)
+            shims = root / "shims"
+            shims.mkdir()
+            for name in ("ffmpeg", "ffprobe", "mkvmerge"):
+                (shims / name).symlink_to(dispatcher)
+            wrappers = ToolWrappers(root / "state", 1)
+            ffmpeg = Path(wrappers.wrap(shims / "ffmpeg", ffprobe=shims / "ffprobe"))
+            for path, name in ((ffmpeg, "ffmpeg"), (ffmpeg.parent / "ffprobe", "ffprobe"),
+                               (Path(wrappers.wrap(shims / "mkvmerge")), "mkvmerge")):
+                with self.subTest(tool=name):
+                    output = subprocess.check_output([str(path), "-version", "name with spaces", "$literal"], text=True)
+                    self.assertEqual(json.loads(output), [name, ["-version", "name with spaces", "$literal"]])
+            self.assertNotEqual(ffmpeg, Path(wrappers.wrap(dispatcher)), "shim and dispatcher must not share a wrapper")
+
     def test_media_tools_share_process_limit_and_preserve_arguments(self):
         for limit in (1, 2):
             with self.subTest(limit=limit), tempfile.TemporaryDirectory(prefix="myflix tools ") as directory:

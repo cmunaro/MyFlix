@@ -74,7 +74,7 @@ In **Downloads**, find a series, set **Library series name** to its existing cat
 
 Following can catch up on existing episodes as well as discover new ones. In **Following**, pause monitoring or choose notification-only mode. Use **mark a season watched & exclude downloads** to skip seasons you have already seen. Notifications stay inside MyFlix.
 
-If a download request times out, check the queue before retrying. MyFlix does not automatically retry uncertain download submissions. Provider availability, accounts, and any required optional modules depend on the upstream provider.
+Failed downloads appear with season, episode, and error details in Downloads. Following retains confirmed episode failures and provides a **Retry failed episode** action. **Retry all failed downloads** moves eligible failures out of Recent failures into a persistent priority queue. Retries start ahead of ordinary queued downloads, while running jobs finish normally. A retry that fails again returns with its new error. Failures require an explicit retry; they do not silently restart. If a download request times out, check the queue before retrying. MyFlix does not automatically retry uncertain download submissions. Provider availability, accounts, and any required optional modules depend on the upstream provider.
 
 ## Use your TV remote
 

@@ -159,7 +159,7 @@ def serve_engine(runtime, ready_fd):
     download_limit, processing_limit = read_limits(os.environ["MYFLIX_DATABASE"])
     install_tools(runtime.parent, processing_limit)
     application = get_wsgi_application()
-    install_stages(download_limit, processing_limit)
+    install_stages(download_limit, processing_limit, database=os.environ["MYFLIX_DATABASE"])
     from .engine_api import install
     install()
     server = create_server(application, host="127.0.0.1", port=0, threads=2)

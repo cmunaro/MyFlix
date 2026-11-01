@@ -9,6 +9,8 @@
   var queueBusy = false;
   var searchBusy = false;
   var cancelPending = {};
+  var retryButton = document.getElementById('retry-failed-downloads');
+  var retryBusy = false;
   function node(tag, text, className) {
     var el = document.createElement(tag);
     if (text !== undefined) { el.textContent = text; }
@@ -26,7 +28,7 @@
   }
   function api(action, body, done) {
     var xhr = new XMLHttpRequest();
-    xhr.open(body === null ? 'GET' : 'POST', action === 'follow' ? '/admin/follow' : '/admin/vibravid/' + action, true);
+    xhr.open(body === null ? 'GET' : 'POST', action === 'follow' ? '/admin/follow' : action === 'retry-failed' ? '/admin/downloads/retry-failed' : '/admin/vibravid/' + action, true);
     xhr.setRequestHeader('Accept', 'application/json');
     xhr.timeout = 35000;
     if (body !== null) { xhr.setRequestHeader('Content-Type', 'application/json'); xhr.setRequestHeader('X-CSRF-Token', token); }
@@ -38,24 +40,27 @@
     xhr.onerror = xhr.ontimeout = function () { done('Connection lost. Refresh the queue before retrying a download.'); };
     xhr.send(body === null ? null : JSON.stringify(body));
   }
-  function refreshQueue() {
+  function refreshQueue(notice) {
     if (queueBusy) { return; }
     queueBusy = true;
     api('queue', null, function (error, data) {
       queueBusy = false;
       if (error) { queueMessage.textContent = error; return; }
-      queueMessage.textContent = '';
+      queueMessage.textContent = typeof notice === 'string' ? notice : '';
       var container = document.getElementById('download-queue');
       var focused = document.activeElement;
       var focusedJob = focused && container.contains(focused) ? focused.getAttribute('data-job-id') : null;
       var restore = null;
       container.textContent = '';
       var total = 0;
-      ['active', 'scheduled'].forEach(function (group) {
-        var items = data[group] || [];
+      var failures = (data.history || []).filter(function (item) { return item.status === 'failed'; });
+      retryButton.hidden = !failures.length;
+      if (retryButton.hidden && focused === retryButton) { document.getElementById('refresh-downloads').focus(); }
+      ['retrying', 'active', 'scheduled', 'failed'].forEach(function (group) {
+        var items = group === 'failed' ? failures : data[group] || [];
         if (!items.length) { return; }
         var section = node('div', undefined, 'queue-group');
-        section.appendChild(node('h3', group === 'active' ? 'Downloading now' : 'Up next'));
+        section.appendChild(node('h3', group === 'retrying' ? 'Priority retries' : group === 'active' ? 'Downloading now' : group === 'scheduled' ? 'Up next' : 'Recent failures'));
         items.forEach(function (item) {
           total += 1;
           var row = node('div', undefined, 'download-job');
@@ -64,12 +69,22 @@
           var episode = episodeDetails(item);
           if (episode) { info.appendChild(node('p', episode)); }
           var progress = Number(item.progress);
-          info.appendChild(node('p', [item.site, item.status, isFinite(progress) && item.progress !== undefined ? progress.toFixed(1) + '%' : '', item.speed].filter(Boolean).join(' · ')));
-          if (isFinite(progress) && item.progress !== undefined) {
+          info.appendChild(node('p', [item.priority ? 'Priority retry' : '', item.site, item.status, group !== 'retrying' && isFinite(progress) && item.progress !== undefined ? progress.toFixed(1) + '%' : '', group !== 'retrying' ? item.speed : ''].filter(Boolean).join(' · ')));
+          if (group === 'failed') {
+            info.appendChild(node('p', item.error || 'Download failed; the engine supplied no details.', 'error'));
+            var following = node('a', 'Review episodes in Following', 'button secondary');
+            following.href = '/admin?section=following';
+            var failureId = 'failed:' + item.id + ':' + item.season + ':' + item.episode;
+            following.setAttribute('data-job-id', failureId);
+            if (failureId === focusedJob) { restore = following; }
+            info.appendChild(following);
+          }
+          if (group === 'retrying' && item.error) { info.appendChild(node('p', item.error, 'error')); }
+          if (group !== 'failed' && group !== 'retrying' && isFinite(progress) && item.progress !== undefined) {
             var bar = node('progress'); bar.max = 100; bar.value = Math.max(0, Math.min(100, progress)); bar.setAttribute('aria-label', 'Download progress'); info.appendChild(bar);
           }
           row.appendChild(info);
-          if (item.id) {
+          if (item.id && (group === 'active' || group === 'scheduled')) {
             var cancel = node('button', 'Cancel' + (item.series_name ? ' series' : ' download'));
             cancel.type = 'button';
             cancel.setAttribute('data-job-id', item.id);
@@ -194,6 +209,20 @@
     });
   });
   document.getElementById('refresh-downloads').onclick = refreshQueue;
+  retryButton.onclick = function () {
+    if (retryBusy) { return; }
+    retryBusy = true;
+    retryButton.setAttribute('aria-disabled', 'true');
+    api('retry-failed', {}, function (error, data) {
+      retryBusy = false;
+      retryButton.removeAttribute('aria-disabled');
+      queueMessage.textContent = error || ('Queued ' + data.queued + ' priority retries.' + (data.skipped ? ' ' + data.skipped + ' downloads could not be retried; review their details.' : ''));
+      if (!error) {
+        if (document.activeElement === retryButton) { document.getElementById('refresh-downloads').focus(); }
+        refreshQueue(queueMessage.textContent);
+      }
+    });
+  };
   refreshQueue();
   window.setInterval(function () { if (!document.hidden) { refreshQueue(); } }, 15000);
 }());

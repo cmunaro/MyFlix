@@ -18,7 +18,7 @@ class VibraVid:
     READ = {"sites": "api/bot/sites/", "status": "api/bot/status/",
             "queue": "api/get-downloads/?history=30"}
     WRITE = {name: f"api/bot/{name}/" for name in ("search", "seasons", "download", "cancel")}
-    INTERNAL = {"episodes": "api/myflix/episodes/"}
+    INTERNAL = {"episodes": "api/myflix/episodes/", "retry_download": "api/myflix/retry-download/"}
 
     def __init__(self, address, secret):
         parts = urlsplit(address)

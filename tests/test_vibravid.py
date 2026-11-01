@@ -89,7 +89,7 @@ class IntegrationTest(unittest.TestCase):
         self.assertEqual(self.client.get("/admin/vibravid/status").json["slots"]["active"], 1)
         self.assertTrue(self.post("cancel", {"download_id": "job-1"}).json["cancelled"])
         self.assertTrue(all(call[2] == "private-engine-secret" for call in Engine.calls))
-        self.assertEqual([c[0] for c in Engine.calls], ["GET", "POST", "POST", "POST", "GET", "GET", "POST"])
+        self.assertEqual([c[0] for c in Engine.calls], ["GET", "POST", "POST", "POST", "GET", "GET", "GET", "POST"])
         self.assertNotIn(b"private-engine-secret", self.client.get("/admin").data)
         self.assertNotIn(b"VibraVid Web URL", self.client.get("/admin").data)
 

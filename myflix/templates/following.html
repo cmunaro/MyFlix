@@ -10,19 +10,21 @@
     <label>Downloads<select name="mode"><option value="auto" {% if subscription.mode == 'auto' %}selected{% endif %}>Automatically download unwatched episodes</option><option value="notify" {% if subscription.mode == 'notify' %}selected{% endif %}>Notify in Following only</option><option value="paused" {% if subscription.mode == 'paused' %}selected{% endif %}>Paused</option></select></label><button class="secondary">Save & check now</button>
   </form>
   {% for season in subscription.seasons %}
-  <details class="catalog-series"><summary>Season {{ season }}{% if subscription.episodes|selectattr('season','equalto',season)|selectattr('state','equalto','new')|list %} · New episodes{% endif %}</summary>
+  <details class="catalog-series"><summary>Season {{ season }}{% if subscription.episodes|selectattr('season','equalto',season)|selectattr('state','equalto','failed')|list %} · Failed downloads{% endif %}{% if subscription.episodes|selectattr('season','equalto',season)|selectattr('state','equalto','new')|list %} · New episodes{% endif %}</summary>
     {{ season_controls(subscription.series,season,rules.get((subscription.series,season)),'following') }}
     {% for episode in subscription.episodes if episode.season == season %}
-    <div class="discovery-row"><div><strong>S{{ season }} · E{{ episode.episode }} — {{ episode.title or 'Episode ' ~ episode.episode }}</strong><p>{{ 'In library' if episode.available else 'Watched · removed / not in library' if episode.watched else 'Not in library' }} · {{ {'new':'Available for download','manual':'Ready for manual download','dismissed':'Dismissed','downloaded':'Downloaded previously','submitting':'Request in progress — check queue','submitted':'Sent to download engine','uncertain':'Request unconfirmed — check queue'}[episode.state] }}{{ ' · Season excluded' if episode.excluded else '' }}</p></div>
+    <div class="discovery-row"><div><strong>S{{ season }} · E{{ episode.episode }} — {{ episode.title or 'Episode ' ~ episode.episode }}</strong><p>{{ 'In library' if episode.available else 'Watched · removed / not in library' if episode.watched else 'Not in library' }} · {{ {'new':'Available for download','manual':'Ready for manual download','dismissed':'Dismissed','downloaded':'Downloaded previously','failed':'Download failed','retry_pending':'Retry queued with priority','submitting':'Request in progress — check queue','submitted':'Sent to download engine','uncertain':'Request unconfirmed — check queue'}[episode.state] }}{{ ' · Season excluded' if episode.excluded else '' }}</p>{% if episode.state == 'failed' %}<p class="error" role="alert">{{ episode.error }}</p>{% endif %}</div>
       {% if not episode.listed %}<p>Currently unavailable from provider</p>{% endif %}
       {% if not episode.available and episode.listed %}
       <form method="post" action="{{ url_for('discovery_action',subscription_id=subscription.id,season=season,episode=episode.episode) }}">
         <input type="hidden" name="csrf" value="{{ session.csrf }}">
-        {% if episode.state in ('submitted','submitting','uncertain') %}
+        {% if episode.state == 'retry_pending' %}
+        <p>Retry queued with priority.</p>
+        {% elif episode.state in ('submitted','submitting','uncertain') %}
         <label class="checkbox"><input type="checkbox" name="queue_checked" value="1" required> I checked the queue: this episode is not downloading</label><button class="secondary" name="action" value="retry">Allow manual retry</button>
         {% else %}
         {% if episode.watched %}<input type="hidden" name="include_watched" value="1">{% endif %}
-        <button class="primary" name="action" value="download">{{ 'Download watched episode again' if episode.watched else 'Download episode' }}</button>
+        <button class="primary" name="action" value="download">{{ 'Download watched episode again' if episode.watched else 'Retry failed episode' if episode.state == 'failed' else 'Download episode' }}</button>
         <button class="secondary" name="action" value="dismiss">Dismiss</button>
         {% endif %}
       </form>

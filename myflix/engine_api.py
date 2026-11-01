@@ -8,7 +8,7 @@ def install():
     from django.views.decorators.http import require_POST
     from searchapp.api import get_api
     from searchapp.api.base import Entries
-    from searchapp.api_bot import _json_body, require_bot_secret
+    from searchapp.api_bot import _json_body, require_bot_secret, bot_download
     from webgui.urls import urlpatterns
 
     @csrf_exempt
@@ -32,3 +32,13 @@ def install():
             return JsonResponse({"error": "Episode metadata unavailable"}, status=502)
 
     urlpatterns.insert(0, path("api/myflix/episodes/", episodes))
+
+    @csrf_exempt
+    @require_bot_secret
+    @require_POST
+    def retry_download(request):
+        from searchapp import _download_infra
+        with _download_infra.download_executor.prioritize():
+            return bot_download(request)
+
+    urlpatterns.insert(0, path("api/myflix/retry-download/", retry_download))

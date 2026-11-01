@@ -1,10 +1,14 @@
 """Concurrency adapters for the pinned engine, without editing its source."""
 import hashlib
+import heapq
 import shlex
 import sys
 import tempfile
 import threading
+import time
 from pathlib import Path
+from concurrent.futures import Future
+from contextlib import contextmanager
 
 from .db import connect, settings
 
@@ -33,8 +37,15 @@ class ToolWrappers:
         self.lock = threading.Lock()
 
     def wrap(self, binary, *, ffprobe=None):
-        binary = str(Path(binary).resolve(strict=True))
-        key = hashlib.sha256(f"{binary}:{self.processing}".encode()).hexdigest()[:16]
+        # Mise and other multicall tools dispatch by the invoked shim's name.
+        # Dereferencing ffmpeg -> mise would run mise with FFmpeg arguments.
+        binary = Path(binary).absolute()
+        binary.stat()
+        binary = str(binary)
+        if ffprobe:
+            ffprobe = Path(ffprobe).absolute()
+            ffprobe.stat()
+        key = hashlib.sha256(f"{binary}:{self.processing}:{ffprobe}".encode()).hexdigest()[:16]
         directory = self.state / "tools" / key
         target = directory / Path(binary).name
         with self.lock:
@@ -50,7 +61,7 @@ class ToolWrappers:
                 temporary.replace(target)
             # yt-dlp discovers ffprobe beside the FFmpeg executable.
             if ffprobe and not (directory / "ffprobe").exists():
-                (directory / "ffprobe").symlink_to(Path(ffprobe).resolve(strict=True))
+                (directory / "ffprobe").symlink_to(ffprobe)
         return str(target)
 
 
@@ -103,7 +114,121 @@ class DownloadStages:
             self.processing.release()
 
 
-def install_stages(downloads, processing):
+class PriorityDownloads:
+    """Admit queued retries before ordinary jobs, without preempting running work."""
+    def __init__(self, limit, stages, active_changed, database=None):
+        self.limit = limit
+        self.stages = stages
+        self.active_changed = active_changed
+        self.condition = threading.Condition()
+        self.local = threading.local()
+        self.pending = []
+        self.sequence = 0
+        self.active = 0
+        self.busy = 0
+        self.stopped = False
+        self.workers = []
+        self.database = database
+        self.retry_check_at = 0
+        self.retry_pending = False
+
+    def ordinary_blocked(self):
+        if self.stopped:
+            return False
+        if self.database and time.monotonic() >= self.retry_check_at:
+            with connect(self.database) as db:
+                self.retry_pending = bool(db.execute("""SELECT 1 FROM download_retries
+                    WHERE root=? AND state='pending' LIMIT 1""", (settings(db)["videos_path"],)).fetchone())
+            self.retry_check_at = time.monotonic() + 1
+        return self.retry_pending
+
+    @contextmanager
+    def prioritize(self):
+        previous = getattr(self.local, "priority", False)
+        self.local.priority = True
+        try:
+            yield
+        finally:
+            self.local.priority = previous
+
+    def submit(self, work):
+        future = Future()
+        with self.condition:
+            if self.stopped:
+                raise RuntimeError("Cannot submit a download after shutdown")
+            heapq.heappush(self.pending, (0 if getattr(self.local, "priority", False) else 1,
+                                         self.sequence, future, work))
+            self.sequence += 1
+            self.retry_check_at = 0
+            if not self.workers:
+                # Match the pinned engine's existing worker bound.
+                for index in range(10):
+                    worker = threading.Thread(target=self.run, name=f"DownloadWorker-{index}", daemon=True)
+                    self.workers.append(worker)
+                    worker.start()
+            self.condition.notify_all()
+        return future
+
+    def acquire(self):
+        with self.condition:
+            if getattr(self.local, "network", False):
+                return
+            # If every worker is busy, a running season must be able to finish
+            # before a worker can pick up a queued retry.
+            while self.active >= self.limit or (self.pending and self.busy < len(self.workers)
+                                                and self.pending[0][0] < getattr(self.local, "rank", 1)):
+                self.condition.wait()
+            self.local.network = True
+            self.active += 1
+            self.active_changed(self.active)
+
+    def release(self):
+        with self.condition:
+            if getattr(self.local, "network", False):
+                self.local.network = False
+                self.active -= 1
+                self.active_changed(self.active)
+                self.retry_check_at = 0
+                self.condition.notify_all()
+
+    def run(self):
+        while True:
+            with self.condition:
+                while (not self.pending or self.active >= self.limit
+                       or (self.pending[0][0] == 1 and self.ordinary_blocked())):
+                    if self.stopped and not self.pending:
+                        return
+                    self.condition.wait(timeout=1)
+                rank, _, future, work = heapq.heappop(self.pending)
+                if not future.set_running_or_notify_cancel():
+                    continue
+                self.local.rank = rank
+                self.busy += 1
+                self.local.network = True
+                self.active += 1
+                self.active_changed(self.active)
+            try:
+                self.stages.acquire()
+                future.set_result(work())
+            except BaseException as error:
+                future.set_exception(error)
+            finally:
+                self.stages.release()
+                self.release()
+                with self.condition:
+                    self.busy -= 1
+                    self.condition.notify_all()
+
+    def shutdown(self, wait=True):
+        with self.condition:
+            self.stopped = True
+            self.condition.notify_all()
+        if wait:
+            for worker in self.workers:
+                worker.join()
+
+
+def install_stages(downloads, processing, *, database=None):
     from searchapp import _download_infra as infrastructure
     from searchapp.views import _shared
     from VibraVid.core.downloader.base import BaseDownloader
@@ -112,7 +237,20 @@ def install_stages(downloads, processing):
     from VibraVid.core.ui.tracker import context_tracker
 
     infrastructure.set_max_download_slots(downloads)
-    stages = DownloadStages(infrastructure._acquire_download_slot, infrastructure._release_download_slot, processing)
+    stages = DownloadStages(None, None, processing)
+    scheduler = PriorityDownloads(downloads, stages, lambda count: setattr(infrastructure, "_active_downloads", count), database)
+    stages.acquire_network, stages.release_network = scheduler.acquire, scheduler.release
+    infrastructure.download_executor.shutdown(wait=True)
+    infrastructure.download_executor = scheduler
+    infrastructure._submit_download_task = _shared._submit_download_task = scheduler.submit
+    add_scheduled = _shared._add_scheduled_download
+
+    def schedule(download_id, *args, **kwargs):
+        add_scheduled(download_id, *args, **kwargs)
+        with infrastructure.scheduled_downloads_lock:
+            infrastructure.scheduled_downloads[download_id]["priority"] = getattr(scheduler.local, "priority", False)
+
+    _shared._add_scheduled_download = schedule
     # _shared imports these functions by value. Replace both owners together.
     def acquire():
         stages.acquire()

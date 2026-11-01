@@ -1,4 +1,5 @@
 /* Generous spacing and native controls for a remote, keyboard, or pointer. */
+.tv-admin [hidden]{display:none!important}
 .tv-admin{--bg:#121314;--panel:#1b1d20;--ink:#f4f3ef;--muted:#a7a9ad;--accent:#f1f0eb;--line:#34363b;font-size:22px;background:var(--bg)}
 .tv-admin main{max-width:1800px;margin-left:270px;padding:48px 4% 80px;min-height:100vh}
 .admin-sidebar{position:fixed;left:0;top:0;bottom:0;width:270px;padding:48px 24px;background:#0b0c0e;border-right:1px solid #292b30;z-index:5}
@@ -42,7 +43,7 @@
 .download-options label{display:block;margin-bottom:18px}
 .download-options button{width:100%}
 .engine-status{font-size:16px;color:#aeb4bd;margin:0 0 20px}
-.queue-panel .panel-heading{margin-bottom:12px}
+.queue-panel .panel-heading{margin-bottom:12px;flex-wrap:wrap;gap:12px}
 .queue-group{margin-top:24px}
 .queue-group h3{font-size:12px;letter-spacing:2px;text-transform:uppercase;color:#a9afb9;margin:0 0 12px}
 .download-job{display:flex;justify-content:space-between;align-items:center;border-top:1px solid #373b43;border-bottom:0;padding:22px 0;gap:0}

@@ -104,7 +104,7 @@ def scan(database):
             ON s.root=m.root AND s.series=m.series AND s.season=m.season
             WHERE s.watched=1 AND m.id NOT IN (SELECT media_id FROM progress)
         """)
-        db.execute("""UPDATE discoveries SET state='downloaded' WHERE state IN ('submitted','uncertain')
+        db.execute("""UPDATE discoveries SET state='downloaded',error='' WHERE state IN ('submitted','uncertain','failed')
             AND EXISTS(SELECT 1 FROM subscriptions s JOIN media m ON m.root=s.root AND m.series=s.series
                 WHERE s.id=discoveries.subscription_id AND m.season=discoveries.season
                 AND m.episode=discoveries.episode AND m.available=1)""")

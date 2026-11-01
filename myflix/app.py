@@ -320,7 +320,7 @@ def create_app(config=None):
                     abort(404)
                 if action == "retry" and request.form.get("queue_checked") != "1":
                     raise ValueError("Check the engine queue before allowing another attempt")
-                states = ("new", "manual", "dismissed", "downloaded") if action == "dismiss" else ("submitted", "uncertain", "submitting")
+                states = ("new", "manual", "dismissed", "downloaded", "failed") if action == "dismiss" else ("submitted", "uncertain", "submitting")
                 placeholders = ",".join("?" for _ in states)
                 result = db.execute(f"""UPDATE discoveries SET state=? WHERE subscription_id=? AND season=? AND episode=?
                     AND state IN ({placeholders})""",
@@ -414,6 +414,17 @@ def create_app(config=None):
             db.execute("INSERT OR REPLACE INTO settings VALUES('processing_limit',?)", (str(processing),))
         return redirect(url_for("admin", section="settings", notice="Limits saved. Restart MyFlix to apply them; current jobs continue with their existing limits."))
 
+    @app.post("/admin/downloads/retry-failed")
+    def retry_failed_downloads():
+        try:
+            queue = vibravid.call("queue")
+            monitor.reconcile_queue(queue)
+            with monitor.download_lock:
+                result = monitor.retries.enqueue(queue)
+            return jsonify(result)
+        except VibraVidError as error:
+            return jsonify(error=str(error)), 502
+
     @app.route("/admin/vibravid/<action>", methods=["GET", "POST"])
     def downloads_api(action):
         if request.method == "GET":
@@ -447,7 +458,19 @@ def create_app(config=None):
                     abort(400, "Select a queued download")
                 body = {"download_id": download_id}
         try:
-            return jsonify(vibravid.call(action, body))
+            if action == "download":
+                with monitor.download_lock:
+                    result = monitor.retries.submit(vibravid, body)
+            elif action == "cancel":
+                with monitor.download_lock:
+                    monitor.retries.cancel_pending(vibravid.call("queue"), body["download_id"])
+                    result = vibravid.call(action, body)
+            else:
+                result = vibravid.call(action, body)
+            if action == "queue":
+                monitor.reconcile_queue(result)
+                result = monitor.retries.present(result)
+            return jsonify(result)
         except VibraVidError as error:
             return jsonify(error=str(error)), 502
 

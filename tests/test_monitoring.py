@@ -18,7 +18,7 @@ class Provider:
     def __init__(self):
         self.episodes = [{"season": 1, "episode": 1, "title": "First"}]
         self.calls = []
-        self.queue = {"active": [], "scheduled": []}
+        self.queue = {"active": [], "scheduled": [], "history": []}
         self.fail = None
 
     def call(self, action, body=None):
@@ -29,7 +29,7 @@ class Provider:
             return {"episodes": copy.deepcopy(self.episodes)}
         if action == "queue":
             return copy.deepcopy(self.queue)
-        return {"queued": True}
+        return {"queued": True, "download_id": f"job-{len(self.calls)}"}
 
 
 class MonitoringTest(unittest.TestCase):
@@ -243,6 +243,220 @@ class MonitoringTest(unittest.TestCase):
         initialize(self.database)
         self.assertEqual(self.post("/admin/following/1/1/1", {"action": "download"}).status_code, 400)
         self.assertEqual(len([a for a, _ in self.provider.calls if a == "download"]), 2)
+
+    def test_confirmed_failure_is_durable_visible_and_manually_retryable(self):
+        self.follow(automatic=True)
+        sent = self.discoveries()[0]
+        failure = {"id": sent["download_id"], "site": "example", "title": "Show", "season": 1,
+                   "episode": 1, "status": "failed", "error": "Merge failed <script>bad</script>",
+                   "start_time": sent["submitted_at"] + 1, "end_time": sent["submitted_at"] + 2}
+        self.provider.queue["history"] = [failure]
+        with patch.object(self.app.extensions["vibravid"], "call", return_value=self.provider.queue):
+            self.assertEqual(self.client.get("/admin/vibravid/queue").status_code, 200)
+        self.assertEqual(self.discoveries()[0]["state"], "failed")
+        self.assertEqual(self.discoveries()[0]["error"], failure["error"])
+        page = self.client.get("/admin?section=following").data
+        self.assertIn(b"Season 1", page)
+        self.assertIn(b"Failed downloads", page)
+        self.assertIn("S1 · E1".encode(), page)
+        self.assertIn(b"Merge failed &lt;script&gt;bad&lt;/script&gt;", page)
+        self.assertIn(b"Retry failed episode", page)
+        self.assertNotIn(b"Allow manual retry", page)
+        self.provider.queue["history"] = []
+        initialize(self.database)
+        self.monitor.tick()
+        self.assertEqual(self.discoveries()[0]["state"], "failed")
+        self.assertEqual(len([a for a, _ in self.provider.calls if a == "download"]), 1)
+        self.assertEqual(self.post("/admin/following/1/1/1", {"action": "download"}).status_code, 302)
+        retry = self.discoveries()[0]
+        self.assertEqual((retry["state"], retry["error"]), ("submitted", ""))
+        self.assertNotEqual(retry["download_id"], sent["download_id"])
+        self.provider.queue["history"] = [failure]
+        self.monitor.tick()
+        self.assertEqual(self.discoveries()[0]["state"], "submitted", "previous attempt cannot fail the retry")
+
+    def test_failure_reconciliation_requires_exact_current_terminal_outcome(self):
+        self.follow(automatic=True)
+        sent = self.discoveries()[0]
+        failure = {"id": sent["download_id"], "site": "example", "title": "Show", "season": 1,
+                   "episode": 1, "status": "failed", "error": "Merge failed",
+                   "start_time": sent["submitted_at"] + 1, "end_time": sent["submitted_at"] + 2}
+        for changed in ({"id": "another-job"}, {"site": "other"}, {"season": 2}, {"episode": 2},
+                        {"title": "Other Show"}, {"start_time": sent["submitted_at"] - 1},
+                        {"episode": None}, {"status": "completed"}, {"status": "cancelled"}):
+            with self.subTest(changed=changed):
+                self.monitor.reconcile_queue({"active": [], "scheduled": [], "history": [{**failure, **changed}]})
+                self.assertEqual(self.discoveries()[0]["state"], "submitted")
+        self.monitor.reconcile_queue({"active": [{**failure, "status": "downloading"}], "scheduled": [], "history": [failure]})
+        self.assertEqual(self.discoveries()[0]["state"], "submitted")
+        self.monitor.reconcile_queue({"active": [], "scheduled": [{"site": "example", "title": "Show - S1 E*"}], "history": [failure]})
+        self.assertEqual(self.discoveries()[0]["state"], "submitted")
+        self.monitor.reconcile_queue({"active": [], "scheduled": [], "history": [failure, {**failure, "status": "completed", "end_time": failure["end_time"] + 1}]})
+        self.assertEqual(self.discoveries()[0]["state"], "submitted")
+        self.monitor.reconcile_queue({"active": [], "scheduled": [], "history": [failure]})
+        self.assertEqual(self.discoveries()[0]["state"], "failed")
+        self.video("Show.S01E01.mp4")
+        scan(self.database)
+        self.assertEqual((self.discoveries()[0]["state"], self.discoveries()[0]["error"]), ("downloaded", ""))
+
+    def test_legacy_submitted_episode_recovers_failure_and_preserves_root_isolation(self):
+        self.post("/admin/settings", {"videos_path": str(self.library)})
+        self.follow()
+        with connect(self.database) as db:
+            db.execute("UPDATE discoveries SET state='submitted'")
+        queue = {"active": [], "scheduled": [], "history": [{"site": "example", "title": "Show",
+            "season": 1, "episode": 1, "status": "failed", "error": "Merge failed"}]}
+        other = self.base / "other"
+        other.mkdir()
+        self.post("/admin/settings", {"videos_path": str(other)})
+        self.monitor.reconcile_queue(queue)
+        self.assertEqual(self.discoveries()[0]["state"], "submitted")
+        self.post("/admin/settings", {"videos_path": str(self.library)})
+        self.post("/admin/following/1", {"mode": "paused"})
+        self.provider.queue = queue
+        self.monitor.tick()
+        self.assertEqual(self.discoveries()[0]["state"], "failed", "paused follows still show terminal errors")
+
+    def test_failure_columns_migrate_without_resetting_reservations(self):
+        self.follow(automatic=True)
+        with connect(self.database) as db:
+            for column in ("error", "download_id", "submitted_at"):
+                db.execute("ALTER TABLE discoveries DROP COLUMN " + column)
+        initialize(self.database)
+        initialize(self.database)
+        item = self.discoveries()[0]
+        self.assertEqual((item["state"], item["error"], item["download_id"], item["submitted_at"]),
+                         ("submitted", "", "", 0))
+
+    def failed_downloads(self, count=2):
+        self.provider.episodes = [{"season": 1, "episode": n} for n in range(1, count + 1)]
+        self.follow(automatic=True)
+        self.provider.queue["history"] = [{"id": row["download_id"], "site": "example", "title": "Show",
+            "season": 1, "episode": row["episode"], "status": "failed", "error": "Merge failed",
+            "start_time": row["submitted_at"] + .001, "end_time": row["submitted_at"] + .002}
+            for row in self.discoveries()]
+
+    def retry_all(self):
+        with patch.object(self.app.extensions["vibravid"], "call", return_value=copy.deepcopy(self.provider.queue)):
+            return self.post("/admin/downloads/retry-failed", body={})
+
+    def test_retry_all_is_durable_idempotent_and_precedes_new_downloads(self):
+        self.failed_downloads()
+        self.assertEqual(self.retry_all().json, {"queued": 2, "skipped": 0})
+        self.assertEqual([r["state"] for r in self.discoveries()], ["retry_pending", "retry_pending"])
+        self.assertEqual(self.retry_all().json, {"queued": 0, "skipped": 0})
+        initialize(self.database)
+        presented = self.monitor.retries.present(copy.deepcopy(self.provider.queue))
+        self.assertEqual(presented["history"], [])
+        self.assertEqual([r["episode"] for r in presented["retrying"]], [1, 2])
+        self.provider.episodes.append({"season": 2, "episode": 1})
+        self.check_now()
+        actions = [(a, b["season"], b["episodes"]) for a, b in self.provider.calls if a in ("download", "retry_download")]
+        self.assertEqual(actions[-3:], [("retry_download", "1", "1"), ("retry_download", "1", "2"), ("download", "2", "1")])
+        self.assertEqual([r["state"] for r in self.discoveries()], ["submitted", "submitted", "submitted"])
+        self.assertEqual(self.monitor.retries.present(copy.deepcopy(self.provider.queue))["history"], [])
+        self.assertEqual(self.retry_all().json["queued"], 0)
+
+    def test_priority_retry_window_is_bounded_and_does_not_wait_behind_normal_queue(self):
+        self.failed_downloads(4)
+        self.retry_all()
+        with connect(self.database) as db:
+            db.execute("UPDATE settings SET value='1' WHERE key IN ('download_limit','processing_limit')")
+        self.provider.queue["scheduled"] = [{"id": "normal", "site": "other", "title": "Normal film"}]
+        original = self.provider.call
+        def call(action, body=None):
+            result = original(action, body)
+            if action == "retry_download":
+                self.provider.queue["scheduled"].append({"id": result["download_id"], "site": body["site"],
+                    "title": body["payload"]["name"], "season": body["season"], "episodes": body["episodes"], "priority": True})
+            return result
+        with patch.object(self.provider, "call", side_effect=call):
+            self.monitor.tick()
+            self.monitor.tick()
+        self.assertEqual(len([a for a, _ in self.provider.calls if a == "retry_download"]), 2)
+        self.assertEqual([r["state"] for r in self.discoveries()], ["submitted", "submitted", "retry_pending", "retry_pending"])
+        presented = self.monitor.retries.present(copy.deepcopy(self.provider.queue))
+        self.assertEqual([item["priority"] for item in presented["scheduled"]], [True, True, False])
+
+    def test_bulk_retry_uncertain_send_is_not_repeated_and_new_failure_reappears(self):
+        self.failed_downloads()
+        self.retry_all()
+        self.provider.fail = "retry_download"
+        self.monitor.tick()
+        self.assertEqual([r["state"] for r in self.discoveries()], ["uncertain", "retry_pending"])
+        self.provider.fail = None
+        self.monitor.tick()
+        sends = [b["episodes"] for a, b in self.provider.calls if a == "retry_download"]
+        self.assertEqual(sends, ["1", "2"])
+        sent = self.discoveries()[1]
+        failure = {"id": sent["download_id"], "site": "example", "title": "Show", "season": 1,
+                   "episode": 2, "status": "failed", "error": "Another merge failure",
+                   "start_time": sent["submitted_at"] + .01, "end_time": sent["submitted_at"] + .02}
+        self.provider.queue["history"].append(failure)
+        self.monitor.tick()
+        presented = self.monitor.retries.present(copy.deepcopy(self.provider.queue))
+        self.assertEqual([r["error"] for r in presented["history"]], ["Another merge failure"])
+        self.provider.queue["history"] = []
+        self.assertEqual(self.monitor.retries.present(copy.deepcopy(self.provider.queue))["history"][0]["error"], "Another merge failure")
+        self.assertEqual([r["state"] for r in self.discoveries()], ["uncertain", "failed"])
+
+    def test_retry_all_skips_local_watched_excluded_unlisted_and_unknown_requests(self):
+        self.failed_downloads(4)
+        self.video("Show.S01E01.mp4")
+        self.video("Show.S01E02.mp4")
+        scan(self.database)
+        with connect(self.database) as db:
+            db.execute("INSERT INTO progress(media_id,watched) SELECT id,1 FROM media WHERE episode=2")
+            db.execute("UPDATE discoveries SET listed=0 WHERE episode=3")
+        (self.library / "Show.S01E02.mp4").unlink()
+        scan(self.database)
+        self.provider.queue["history"].append({"id": "unknown", "site": "other", "title": "Unknown film", "status": "failed"})
+        response = self.retry_all()
+        self.assertEqual(response.json, {"queued": 1, "skipped": 4})
+        self.post("/admin/season", {"series": "Show", "season": "1", "action": "exclude"})
+        self.monitor.tick()
+        self.assertFalse(any(a == "retry_download" for a, _ in self.provider.calls), "changed season rules win before submission")
+
+    def test_retry_all_respects_root_and_requires_csrf(self):
+        self.post("/admin/settings", {"videos_path": str(self.library)})
+        scan(self.database)
+        self.failed_downloads(1)
+        self.assertEqual(self.client.post("/admin/downloads/retry-failed", json={}).status_code, 403)
+        self.retry_all()
+        other = self.base / "other"
+        other.mkdir()
+        self.post("/admin/settings", {"videos_path": str(other)})
+        self.monitor.tick()
+        self.assertFalse(any(a == "retry_download" for a, _ in self.provider.calls))
+        self.assertEqual(self.retry_all().json["queued"], 0)
+        self.post("/admin/settings", {"videos_path": str(self.library)})
+        scan(self.database)
+        self.monitor.tick()
+        self.assertEqual(len([a for a, _ in self.provider.calls if a == "retry_download"]), 1)
+
+    def test_cancelling_series_also_stops_retries_waiting_in_sqlite(self):
+        self.failed_downloads()
+        self.retry_all()
+        self.provider.queue["active"] = [{"id": "active-series", "site": "example", "title": "Show", "series_name": "Show"}]
+        with patch.object(self.app.extensions["vibravid"], "call", side_effect=self.provider.call):
+            response = self.post("/admin/vibravid/cancel", body={"download_id": "active-series"})
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(self.monitor.retries.pending())
+        self.monitor.tick()
+        self.assertFalse(any(a == "retry_download" for a, _ in self.provider.calls))
+        self.assertEqual([r["state"] for r in self.discoveries()], ["dismissed", "dismissed"])
+
+    def test_manual_film_request_can_be_bulk_retried_without_following(self):
+        self.provider.calls.clear()
+        request = {"site": "example", "payload": {"id": "film-1", "name": "Film", "is_movie": True, "type": "movie"}}
+        with patch.object(self.app.extensions["vibravid"], "call", side_effect=self.provider.call):
+            result = self.post("/admin/vibravid/download", body=request).json
+        self.provider.queue["history"] = [{"id": result["download_id"], "site": "example", "title": "Film",
+            "season": 0, "episode": 0, "status": "failed", "start_time": time.time(), "end_time": time.time(), "error": "Merge failed"}]
+        self.assertEqual(self.retry_all().json, {"queued": 1, "skipped": 0})
+        self.monitor.tick()
+        self.assertEqual([b for a, b in self.provider.calls if a == "retry_download"], [request])
+        self.assertEqual(self.monitor.retries.present(copy.deepcopy(self.provider.queue))["history"], [])
 
     def test_file_removal_archive_and_renamed_return_preserve_edits_and_progress(self):
         self.video("Show.S01E01.First.mp4")

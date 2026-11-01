@@ -11,6 +11,7 @@ function screen(tv = true) {
       this.tagName = tag.toUpperCase(); this.attrs = {...attrs}; this.children = [];
       this.rect = {left: 0, top: 0, width: 180, height: 60, ...rect};
       this.offsetWidth = this.rect.width; this.offsetHeight = this.rect.height;
+      this.hidden = attrs.hidden !== undefined;
       this.type = attrs.type || ''; this.value = ''; this.disabled = false;
       this.className = attrs.class || ''; this._text = ''; this.clicks = 0;
       this.classList = {add: name => { this.className += ' ' + name; }};
@@ -21,6 +22,8 @@ function screen(tv = true) {
       this.children = []; this._text = value;
     }
     get textContent() { return this._text + this.children.map(child => child.textContent).join(' '); }
+    set hidden(value) { this._hidden = Boolean(value); this.offsetWidth = value ? 0 : this.rect.width; this.offsetHeight = value ? 0 : this.rect.height; }
+    get hidden() { return this._hidden; }
     appendChild(child) { child.parentNode = this; this.children.push(child); return child; }
     insertBefore(child, before) { child.parentNode = this; this.children.splice(this.children.indexOf(before), 0, child); }
     contains(child) { return child === this || this.children.some(el => el.contains(child)); }
@@ -57,6 +60,7 @@ function screen(tv = true) {
   const search = add(form, 'button', {id: 'search-downloads'}, {left: 740, top: 100});
   for (const id of ['download-message', 'download-connection', 'download-results', 'queue-message', 'download-queue']) add(root, 'div', {id});
   const refresh = add(root, 'button', {id: 'refresh-downloads'}, {left: 740, top: 300});
+  add(root, 'button', {id: 'retry-failed-downloads', hidden: ''}, {left: 500, top: 300});
   const meta = {content: 'csrf-token'};
   document = {
     body, documentElement: new Element('html'), activeElement: body,
@@ -185,4 +189,46 @@ assert.equal(followRequest.headers['X-CSRF-Token'], 'csrf-token');
 assert.equal(followRequest.body.series, 'The Simpsons', 'chosen library name links watch history');
 assert.equal(followRequest.body.payload.id, 'simpson', 'provider identity is preserved');
 assert.equal(ui.document.activeElement, follow, 'following retains remote focus');
-console.log('Admin behavior passed: remote fields and Back, native desktop inputs, current queue only, refresh focus, episode selection, CSRF, and mutation guards');
+const errors = screen(); errors.downloads();
+errors.reply('sites', {groups: []});
+errors.reply('status', {slots: {active: 0, max: 4}, queued: 0});
+const failedQueue = {active: [], scheduled: [], history: [
+  {id: 'failed-1', title: 'Show', season: 1, episode: 2, status: 'failed', progress: 100, error: 'Merge failed <script>bad</script>'},
+  {id: 'failed-2', title: 'Show', season: 2, episode: 1, status: 'failed'},
+  {title: 'Completed title', status: 'completed'}, {title: 'Cancelled title', status: 'cancelled'}
+]};
+errors.reply('queue', failedQueue);
+const failedText = errors.el('download-queue').textContent;
+assert(failedText.includes('Recent failures'));
+assert(failedText.includes('Season 1 · Episode 2') && failedText.includes('Season 2 · Episode 1'));
+assert(failedText.includes('Merge failed <script>bad</script>'), 'error is rendered as text');
+assert(failedText.includes('Download failed; the engine supplied no details.'));
+assert(!failedText.includes('Completed title') && !failedText.includes('Cancelled title'));
+assert(!failedText.includes('Nothing downloading'), 'failure is visible instead of an empty queue');
+assert(!errors.el('download-queue').querySelector('button'), 'terminal jobs cannot be cancelled');
+assert(!errors.el('download-queue').querySelector('progress'), '100% failed jobs are not shown as completed progress');
+assert(!errors.el('download-queue').querySelector('script'), 'provider errors cannot inject HTML');
+errors.el('download-queue').querySelector('a').focus();
+errors.intervals[0](); errors.reply('queue', failedQueue);
+assert.equal(errors.document.activeElement, errors.el('download-queue').querySelector('a'), 'failed episode review retains focus');
+assert.equal(errors.document.activeElement.href, '/admin?section=following');
+errors.reply('status', {slots: {active: 0, max: 4}, queued: 0});
+const retryAll = errors.el('retry-failed-downloads');
+assert(!retryAll.hidden, 'bulk retry is available when failures are shown');
+retryAll.focus(); retryAll.click(); retryAll.click();
+assert.equal(errors.pending.filter(xhr => xhr.action === 'retry-failed').length, 1, 'bulk retry cannot duplicate while pending');
+const retryRequest = errors.reply('retry-failed', {queued: 2, skipped: 0});
+assert.equal(retryRequest.headers['X-CSRF-Token'], 'csrf-token');
+errors.reply('queue', {history: [], active: [{id: 'normal', title: 'Normal film'}], scheduled: [], retrying: [
+  {id: 'retry:1', title: 'Show', season: 1, episode: 2, status: 'Priority retry queued', priority: true}
+]});
+errors.reply('status', {slots: {active: 1, max: 4}, queued: 0});
+const retriedText = errors.el('download-queue').textContent;
+assert(retriedText.indexOf('Priority retries') < retriedText.indexOf('Downloading now'), 'pending retries are at the top');
+assert(!retriedText.includes('Recent failures') && !retriedText.includes('Merge failed'), 'retried failures are removed');
+assert(retryAll.hidden, 'bulk retry hides once failures have moved into the queue');
+assert.equal(errors.document.activeElement, errors.refresh, 'focus moves to Refresh when the action disappears');
+assert(errors.el('queue-message').textContent.includes('Queued 2 priority retries.'), 'bulk retry result survives refresh');
+retryAll.click(); errors.reply('retry-failed', {error: 'Connection uncertain. Check queue.'}, 502);
+assert(!errors.pending.some(xhr => xhr.action === 'retry-failed'), 'failed bulk request is not automatically retried');
+console.log('Admin behavior passed: remote fields and Back, native desktop inputs, current downloads and episode failures, refresh focus, episode selection, CSRF, and mutation guards');
