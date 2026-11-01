@@ -122,6 +122,12 @@ class SeriesMonitor:
         with self.download_lock:
             return self._download(subscription_id, season, episode, automatic=automatic, include_watched=include_watched)
 
+    def retry_failed(self):
+        queue = self.engine.call("queue")
+        self.reconcile_queue(queue)
+        with self.download_lock:
+            return self.retries.enqueue(queue)
+
     def reconcile_queue(self, queue):
         """Persist confirmed episode failures without retrying uncertain requests."""
         if not all(isinstance(queue.get(key), list) for key in ("active", "scheduled", "history")):
@@ -280,9 +286,18 @@ class SeriesMonitor:
         finally:
             self.lock.release()
 
-    def run(self, stop):
+    def run(self, stop, scan_ready=None):
+        startup_recovery = True
         while not stop.is_set():
+            if scan_ready is not None and not scan_ready.is_set():
+                stop.wait(.2)
+                continue
             try:
+                if startup_recovery:
+                    result = self.retry_failed()
+                    startup_recovery = False
+                    logging.info("Startup download recovery: %s priority retries queued; %s skipped",
+                                 result["queued"], result["skipped"])
                 self.tick()
             except Exception:
                 logging.exception("Series monitoring failed")

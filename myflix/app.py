@@ -417,11 +417,7 @@ def create_app(config=None):
     @app.post("/admin/downloads/retry-failed")
     def retry_failed_downloads():
         try:
-            queue = vibravid.call("queue")
-            monitor.reconcile_queue(queue)
-            with monitor.download_lock:
-                result = monitor.retries.enqueue(queue)
-            return jsonify(result)
+            return jsonify(monitor.retry_failed())
         except VibraVidError as error:
             return jsonify(error=str(error)), 502
 

@@ -13,6 +13,7 @@ def main():
     logging.basicConfig(level=logging.INFO)
     app = create_app()
     stop = threading.Event()
+    scan_ready = threading.Event()
     engine = ManagedEngine(app)
 
     def terminate(signum, frame):
@@ -24,6 +25,7 @@ def main():
         while not stop.is_set():
             try:
                 app.extensions["scan"]()
+                scan_ready.set()
             except Exception:
                 logging.exception("Library scan failed; will retry in 60 seconds")
             stop.wait(60)
@@ -32,7 +34,7 @@ def main():
         engine.start()
         threading.Thread(target=index, name="library-index", daemon=True).start()
         threading.Thread(target=app.extensions["artwork"].run, args=(stop,), name="artwork-cache", daemon=True).start()
-        threading.Thread(target=app.extensions["monitor"].run, args=(stop,), name="series-monitor", daemon=True).start()
+        threading.Thread(target=app.extensions["monitor"].run, args=(stop, scan_ready), name="series-monitor", daemon=True).start()
 
         def monitor():
             while not stop.wait(1):

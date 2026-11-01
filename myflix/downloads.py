@@ -1,4 +1,4 @@
-"""Durable, explicitly requested retries and original provider request identities."""
+"""Durable retries of confirmed failures and original provider request identities."""
 import hashlib
 import json
 import re

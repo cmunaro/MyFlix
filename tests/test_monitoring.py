@@ -10,7 +10,7 @@ from unittest.mock import patch
 from myflix.app import create_app
 from myflix.catalog import scan
 from myflix.db import connect, initialize
-from myflix.monitoring import INTERVAL, queued_episode
+from myflix.monitoring import INTERVAL, SeriesMonitor, queued_episode
 from myflix.vibravid import VibraVidError
 
 
@@ -335,6 +335,118 @@ class MonitoringTest(unittest.TestCase):
             "season": 1, "episode": row["episode"], "status": "failed", "error": "Merge failed",
             "start_time": row["submitted_at"] + .001, "end_time": row["submitted_at"] + .002}
             for row in self.discoveries()]
+
+    def test_server_restart_automatically_retries_confirmed_failures_with_priority(self):
+        self.failed_downloads(1)
+        self.monitor.reconcile_queue(self.provider.queue)
+        self.assertEqual(self.discoveries()[0]["state"], "failed")
+        restarted = SeriesMonitor(self.database, self.provider)
+        stop = threading.Event()
+        tick = restarted.tick
+        def first_tick():
+            tick()
+            stop.set()
+        with patch.object(restarted, "tick", side_effect=first_tick):
+            restarted.run(stop)
+        self.assertEqual([b["episodes"] for a, b in self.provider.calls if a == "retry_download"], ["1"])
+        self.assertEqual(self.discoveries()[0]["state"], "submitted")
+        self.assertEqual(restarted.retries.present(copy.deepcopy(self.provider.queue))["history"], [])
+
+    def test_startup_retries_once_without_looping_when_the_retry_fails(self):
+        self.failed_downloads(1)
+        restarted = SeriesMonitor(self.database, self.provider)
+        stop = threading.Event()
+        tick = restarted.tick
+        ticks = []
+        def advance():
+            tick()
+            ticks.append(True)
+            if len(ticks) == 1:
+                sent = self.discoveries()[0]
+                self.provider.queue["history"] = [{"id": sent["download_id"], "site": "example", "title": "Show",
+                    "season": 1, "episode": 1, "status": "failed", "error": "Still failing",
+                    "start_time": sent["submitted_at"] + .01, "end_time": sent["submitted_at"] + .02}]
+            else:
+                stop.set()
+        with patch.object(restarted, "tick", side_effect=advance), patch.object(stop, "wait", side_effect=lambda _: stop.is_set()):
+            restarted.run(stop)
+        self.assertEqual(len([a for a, _ in self.provider.calls if a == "retry_download"]), 1)
+        self.assertEqual((self.discoveries()[0]["state"], self.discoveries()[0]["error"]), ("failed", "Still failing"))
+
+    def test_startup_preserves_uncertain_requests_and_resumes_existing_pending_retries(self):
+        self.failed_downloads()
+        self.retry_all()
+        self.provider.fail = "retry_download"
+        self.monitor.tick()
+        self.provider.fail = None
+        restarted = SeriesMonitor(self.database, self.provider)
+        stop = threading.Event()
+        tick = restarted.tick
+        def first_tick():
+            tick()
+            stop.set()
+        with patch.object(restarted, "tick", side_effect=first_tick):
+            restarted.run(stop)
+        self.assertEqual([b["episodes"] for a, b in self.provider.calls if a == "retry_download"], ["1", "2"])
+        self.assertEqual([r["state"] for r in self.discoveries()], ["uncertain", "submitted"])
+
+    def test_startup_never_retries_submissions_without_terminal_evidence(self):
+        self.failed_downloads(3)
+        self.provider.queue["history"] = []
+        with connect(self.database) as db:
+            for episode, state in enumerate(("uncertain", "submitted", "submitting"), 1):
+                db.execute("UPDATE discoveries SET state=? WHERE episode=?", (state, episode))
+        restarted = SeriesMonitor(self.database, self.provider)
+        stop = threading.Event()
+        tick = restarted.tick
+        def first_tick():
+            tick()
+            stop.set()
+        with patch.object(restarted, "tick", side_effect=first_tick):
+            restarted.run(stop)
+        self.assertFalse(any(a == "retry_download" for a, _ in self.provider.calls))
+        self.assertEqual([r["state"] for r in self.discoveries()], ["uncertain", "submitted", "submitting"])
+
+    def test_startup_waits_for_initial_scan_and_failed_mount_blocks_submission(self):
+        self.failed_downloads(1)
+        with connect(self.database) as db:
+            db.execute("INSERT INTO settings VALUES('scan_error','Library unavailable')")
+        restarted = SeriesMonitor(self.database, self.provider)
+        stop, scan_ready = threading.Event(), threading.Event()
+        tick = restarted.tick
+        previous_calls = copy.deepcopy(self.provider.calls)
+        def first_tick():
+            tick()
+            stop.set()
+        def wait(interval):
+            if interval == .2:
+                self.assertEqual(self.provider.calls, previous_calls, "no recovery reads or sends before the initial scan")
+                scan_ready.set()
+            return stop.is_set()
+        with patch.object(restarted, "tick", side_effect=first_tick), patch.object(stop, "wait", side_effect=wait):
+            restarted.run(stop, scan_ready)
+        self.assertEqual(self.discoveries()[0]["state"], "retry_pending")
+        self.assertFalse(any(a == "retry_download" for a, _ in self.provider.calls))
+        with connect(self.database) as db:
+            db.execute("DELETE FROM settings WHERE key='scan_error'")
+        restarted.tick()
+        self.assertEqual(len([a for a, _ in self.provider.calls if a == "retry_download"]), 1)
+
+    def test_startup_recovers_after_queue_read_failure_without_duplicate_attempts(self):
+        self.failed_downloads(1)
+        self.provider.fail = "queue"
+        restarted = SeriesMonitor(self.database, self.provider)
+        stop = threading.Event()
+        tick = restarted.tick
+        def first_tick():
+            tick()
+            stop.set()
+        def wait(interval):
+            self.provider.fail = None
+            return stop.is_set()
+        with patch.object(restarted, "tick", side_effect=first_tick), patch.object(stop, "wait", side_effect=wait), self.assertLogs(level="ERROR"):
+            restarted.run(stop)
+        self.assertEqual(len([a for a, _ in self.provider.calls if a == "retry_download"]), 1)
 
     def retry_all(self):
         with patch.object(self.app.extensions["vibravid"], "call", return_value=copy.deepcopy(self.provider.queue)):
