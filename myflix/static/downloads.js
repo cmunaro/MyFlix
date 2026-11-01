@@ -15,6 +15,15 @@
     if (className) { el.className = className; }
     return el;
   }
+  function episodeDetails(item) {
+    if (/^(film|movie)$/i.test(item.type || '')) { return ''; }
+    var season = /^\d+$/.test(String(item.season)) ? Number(item.season) : null;
+    var episode = /^\d+$/.test(String(item.episode)) ? Number(item.episode) : null;
+    var details = [];
+    if (season !== null && (season > 0 || episode > 0)) { details.push('Season ' + season); }
+    if (episode !== null && episode > 0) { details.push('Episode ' + episode); }
+    return details.join(' · ');
+  }
   function api(action, body, done) {
     var xhr = new XMLHttpRequest();
     xhr.open(body === null ? 'GET' : 'POST', action === 'follow' ? '/admin/follow' : '/admin/vibravid/' + action, true);
@@ -52,6 +61,8 @@
           var row = node('div', undefined, 'download-job');
           var info = node('div');
           info.appendChild(node('strong', item.title || 'Untitled download'));
+          var episode = episodeDetails(item);
+          if (episode) { info.appendChild(node('p', episode)); }
           var progress = Number(item.progress);
           info.appendChild(node('p', [item.site, item.status, isFinite(progress) && item.progress !== undefined ? progress.toFixed(1) + '%' : '', item.speed].filter(Boolean).join(' · ')));
           if (isFinite(progress) && item.progress !== undefined) {

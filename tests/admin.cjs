@@ -129,14 +129,32 @@ assert.equal(columns.document.activeElement, columns.refresh, 'vertical movement
 ui.downloads();
 ui.reply('sites', {groups: [{label: 'Providers', options: [{value: '__all__', label: 'All providers'}]}]});
 ui.reply('status', {slots: {active: 1, max: 1}, queued: 0});
-const active = {active: [{id: 'job-1', title: 'I Simpson', status: 'Downloading', progress: 40}], history: [{title: 'Old completed film'}]};
+const active = {active: [{id: 'job-1', title: 'I Simpson', type: 'Serie', season: 2, episode: 7, status: 'Downloading', progress: 40}], history: [{title: 'Old completed film'}]};
 ui.reply('queue', active);
+assert(ui.el('download-queue').textContent.includes('Season 2 · Episode 7'), 'active download identifies the actual season and episode');
 assert(!ui.el('download-queue').textContent.includes('Old completed film'), 'history is absent');
 assert(ui.el('download-queue').querySelector('progress'), 'active progress is visible');
 const cancel = () => ui.el('download-queue').querySelector('button');
 cancel().focus(); ui.intervals[0](); ui.reply('queue', active);
 assert.equal(ui.document.activeElement, cancel(), 'refresh restores focused job action');
 ui.reply('status', {slots: {active: 1, max: 1}, queued: 0});
+for (const [fields, expected] of [
+  [{season: '0', episode: '3'}, 'Season 0 · Episode 3'],
+  [{season: '12', episode: '105'}, 'Season 12 · Episode 105'],
+  [{season: null, episode: 4}, 'Episode 4'],
+  [{season: 3, episode: null}, 'Season 3'],
+  [{season: 0, episode: 0}, ''],
+  [{season: null, episode: null}, ''],
+  [{season: 'invalid', episode: 'unknown'}, ''],
+  [{type: 'Film', season: 0, episode: 0}, '']
+]) {
+  ui.intervals[0]();
+  ui.reply('queue', {active: [{...active.active[0], ...fields}]});
+  const text = ui.el('download-queue').textContent;
+  if (expected) { assert(text.includes(expected), 'episode metadata renders: ' + expected); }
+  else { assert(!/Season |Episode /.test(text), 'missing metadata and films have no invented episode numbers'); }
+  ui.reply('status', {slots: {active: 1, max: 1}, queued: 0});
+}
 cancel().click(); cancel().click();
 assert.equal(ui.pending.filter(xhr => xhr.action === 'cancel').length, 1, 'pending cancellation cannot duplicate');
 ui.reply('cancel', {cancelled: true}); ui.reply('queue', {history: active.history});
