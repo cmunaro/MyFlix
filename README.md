@@ -87,7 +87,7 @@ If a download request times out, check the queue before retrying. MyFlix does no
 | Back during playback | Close the track chooser, exit fullscreen, dismiss controls, then return to the library as applicable |
 | OK / Back in an admin field | Start / finish editing |
 
-Playback controls hide after three idle seconds while playing, even if a button had focus. Pause keeps them visible. Near an episode's end, a separate next-episode prompt appears; playback advances automatically at completion when another available episode exists. Progress is shared by the household, with no separate user profiles.
+Playback controls hide after three idle seconds while playing, even if a button had focus. Pause keeps them visible. Near an episode's end, a separate next-episode prompt appears; playback advances automatically at completion when another available episode exists. Progress is shared by the household, with no separate user profiles. Series in **Continue watching** stay out of **Not watched**. Cards outside Continue watching show only artwork and title; resume badges and playback progress stay in Continue watching.
 
 Audio and subtitle selection appears when the browser exposes suitable native tracks. Subtitles start off for each video. External subtitle files are not imported.
 

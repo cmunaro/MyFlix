@@ -1,4 +1,4 @@
-{% macro shelf(label, items, episode_cards=false) %}
+{% macro shelf(label, items, episode_cards=false, continuing=false) %}
 <section class="tv-shelf" data-shelf>
   <h2>{{ label }}</h2>
   <div class="rail" data-rail aria-label="{{ label }}">
@@ -6,12 +6,12 @@
     <a class="tile tone-{{ item.id % 5 }}" href="{{ item.href }}" data-card data-media-id="{{ item.id }}" aria-label="{{ item.series ~ ' — ' if item.series else '' }}{{ item.title }}{{ ' — Watched' if item.watched else '' }}">
       <div class="tile-picture">
         {% if item.poster %}<img src="{{ item.poster }}" alt="" loading="lazy">{% else %}<span class="tile-art" aria-hidden="true">{{ item.series or item.title }}</span>{% endif %}
-        <span class="tile-logo" aria-hidden="true">M</span>
+        {% if continuing %}<span class="tile-logo" aria-hidden="true">M</span>
         {% if item.watched %}<span class="tile-badge">✓ Watched</span>{% elif item.position > 0 %}<span class="tile-badge">Resume · {{ (item.position / 60)|int }} min</span>{% endif %}
-        <span class="tile-play" aria-hidden="true">▶</span>
+        <span class="tile-play" aria-hidden="true">▶</span>{% endif %}
       </div>
-      <div class="tile-caption"><strong>{% if episode_cards and item.series %}S{{ item.season }}:E{{ item.episode }} · {{ item.title }}{% else %}{{ item.series or item.title }}{% endif %}</strong><span>{{ 'TV Show' if item.series and not episode_cards else 'Episode' if item.series else 'Movie' }}</span></div>
-      {% if item.position > 0 and item.duration > 0 and not item.watched %}<progress value="{{ item.position }}" max="{{ item.duration }}" aria-label="Playback progress"></progress>{% endif %}
+      <div class="tile-caption"><strong>{% if episode_cards and item.series %}S{{ item.season }}:E{{ item.episode }} · {{ item.title }}{% else %}{{ item.series or item.title }}{% endif %}</strong>{% if continuing %}<span>{{ 'Episode' if item.series else 'Movie' }}</span>{% endif %}</div>
+      {% if continuing and item.position > 0 and item.duration > 0 and not item.watched %}<progress value="{{ item.position }}" max="{{ item.duration }}" aria-label="Playback progress"></progress>{% endif %}
     </a>
     {% endfor %}
   </div>

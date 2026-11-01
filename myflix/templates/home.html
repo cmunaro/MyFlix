@@ -18,7 +18,7 @@
 </section>
 {% endif %}
 <div class="tv-shelves {{ 'without-hero' if query or request.args.get('search') else '' }}">
-  {% for label,items in shelves %}{{ shelf(label,items,label == 'Continue watching') }}{% endfor %}
+  {% for label,items in shelves %}{{ shelf(label,items,label == 'Continue watching',continuing=label == 'Continue watching') }}{% endfor %}
   {% if not shelves %}
   <section class="tv-empty"><span class="empty-monogram" aria-hidden="true">M</span><h1>{{ 'No titles found' if query else 'Your cinema is waiting' }}</h1><p>{{ 'Try another movie or show.' if query else 'Add completed films and episodes from the admin library.' }}</p><a class="button play" data-initial-focus href="{{ '/' if query or view != 'all' else '/admin' }}">{{ 'Browse all titles' if query or view != 'all' else 'Open library admin' }}</a></section>
   {% endif %}

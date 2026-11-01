@@ -169,9 +169,69 @@ class MyFlixTest(unittest.TestCase):
         self.assertEqual(re.findall(r"<h2>(.*?)</h2>", home), ["Continue watching", "Not watched", "Series", "Film"])
         self.assertNotIn('aria-label="Browse"', home)
         self.assertNotIn("Recently added", home)
-        self.assertEqual(home.count(f'href="/series/{first}" data-card'), 2)
+        self.assertEqual(home.count(f'href="/series/{first}" data-card'), 1)
         search = self.client.get("/?q=Show").data.decode()
-        self.assertEqual(re.findall(r"<h2>(.*?)</h2>", search), ["Continue watching", "Not watched", "Series"])
+        self.assertEqual(re.findall(r"<h2>(.*?)</h2>", search), ["Continue watching", "Series"])
+
+    def test_continuing_series_is_excluded_from_not_watched(self):
+        self.configure()
+        for name in ("Show.S01E01.mp4", "Show.S01E02.mp4", "Other.S01E01.mp4"):
+            self.video(name)
+        scan(self.database)
+        with connect(self.database) as db:
+            ids = {row["path"]: row["id"] for row in db.execute("SELECT id,path FROM media")}
+        first, second = ids["Show.S01E01.mp4"], ids["Show.S01E02.mp4"]
+        other = ids["Other.S01E01.mp4"]
+        # The continuing episode differs from the series card's representative.
+        self.post(f"/api/progress/{second}", body={"position": 30, "duration": 100})
+        for url in ("/", "/?q=Show", "/?view=series"):
+            with self.subTest(url=url):
+                home = self.client.get(url).data.decode()
+                continuing = re.search(r'<h2>Continue watching</h2>(.*?)</section>', home, re.S)
+                self.assertIn(f'data-media-id="{second}"', continuing[1])
+                unwatched = re.search(r'<h2>Not watched</h2>(.*?)</section>', home, re.S)
+                if url == "/?q=Show":
+                    self.assertIsNone(unwatched)
+                else:
+                    self.assertEqual(re.findall(r'data-media-id="(\d+)"', unwatched[1]), [str(other)])
+
+        self.post(f"/api/progress/{second}", body={"position": 100, "duration": 100})
+        home = self.client.get("/?q=Show").data.decode()
+        self.assertNotIn("<h2>Continue watching</h2>", home)
+        unwatched = re.search(r'<h2>Not watched</h2>(.*?)</section>', home, re.S)
+        self.assertEqual(re.findall(r'data-media-id="(\d+)"', unwatched[1]), [str(first)])
+
+    def test_only_continue_watching_cards_show_playback_details(self):
+        self.configure()
+        for name in ("Show.S01E01.Start.mp4", "Show.S01E02.Next.mp4", "Film.mp4", "New.Film.mp4"):
+            self.video(name)
+        (self.library / "poster.jpg").write_bytes(b"local-jpeg-fixture")
+        scan(self.database)
+        with connect(self.database) as db:
+            episode = db.execute("SELECT id FROM media WHERE episode=1").fetchone()[0]
+            film = db.execute("SELECT id FROM media WHERE title='Film'").fetchone()[0]
+        self.post(f"/api/progress/{episode}", body={"position": 30, "duration": 100})
+        self.post(f"/api/progress/{film}", body={"position": 100, "duration": 100})
+
+        for url in ("/", f"/series/{episode}"):
+            home = self.client.get(url).data.decode()
+            shelves = re.findall(r'<h2>(.*?)</h2>(.*?)</section>', home, re.S)
+            self.assertTrue(shelves)
+            for label, shelf in shelves:
+                with self.subTest(url=url, shelf=label):
+                    self.assertIn('<img src="/art/', shelf)
+                    self.assertIn('<div class="tile-caption"><strong>', shelf)
+                    if label == "Continue watching":
+                        self.assertIn('class="tile-badge">Resume', shelf)
+                        self.assertIn('<progress ', shelf)
+                        self.assertIn('<span>Episode</span>', shelf)
+                    else:
+                        for decoration in ('class="tile-badge"', 'class="tile-logo"',
+                                           'class="tile-play"', '<progress ', '</strong><span>'):
+                            self.assertNotIn(decoration, shelf)
+        detail = self.client.get(f"/series/{episode}").data.decode()
+        self.assertIn('S1:E1 · Start</strong>', detail)
+        self.assertIn('S1:E2 · Next</strong>', detail)
 
     def test_not_watched_shelf_tracks_completion_and_available_series(self):
         self.configure()

@@ -158,7 +158,8 @@ def create_app(config=None):
         shelves = []
         if continuing:
             shelves.append(("Continue watching", continuing))
-        not_watched = [title for title in titles if not title["watched"]]
+        not_watched = [title for title in titles
+                       if not title["watched"] and title["series"] not in continuing_series]
         if not_watched and view != "continue":
             shelves.append(("Not watched", not_watched))
         if shows and view != "continue":
