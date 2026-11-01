@@ -4,6 +4,7 @@
   var userAgent = typeof navigator === 'undefined' ? '' : navigator.userAgent || '';
   var adminPage = /tv-admin/.test(document.body.className || '');
   var editing = null;
+  var pointerFocus = false, pointerX = null, pointerY = null;
   var tvPage = document.getElementById('player') || /tv-browse/.test(document.body.className || '') || adminPage;
   var isTV = Boolean(tvPage && /VIDAA|Hisense|HiSmartTV|SmartTV|Smart-TV|HbbTV|Vewd/i.test(userAgent));
   function fullscreenElement() { return document.fullscreenElement || document.webkitFullscreenElement || null; }
@@ -47,15 +48,18 @@
       return !el.disabled && el.offsetWidth && el.offsetHeight;
     });
   }
+  function centerCard(el) {
+    var rail = el.parentNode;
+    rail.scrollLeft = Math.max(0, el.offsetLeft - rail.offsetLeft - rail.clientWidth * 0.04);
+    var bounds = rail.parentNode.getBoundingClientRect();
+    // Include the heading, artwork, caption, and focus-ring padding in the row.
+    var top = Math.max(24, (window.innerHeight - bounds.height) / 2);
+    window.scrollTo(0, Math.max(0, window.pageYOffset + bounds.top - top));
+  }
   function focus(el) {
     if (!el) { return; }
     el.focus();
-    if (el.hasAttribute('data-card')) {
-      var rail = el.parentNode;
-      rail.scrollLeft = Math.max(0, el.offsetLeft - rail.offsetLeft - rail.clientWidth * 0.04);
-      var section = rail.parentNode;
-      window.scrollTo(0, window.pageYOffset + section.getBoundingClientRect().top - 90);
-    } else if (el.closest && el.closest('.tv-header')) {
+    if (el.closest && el.closest('.tv-header')) {
       window.scrollTo(0, 0);
     } else if (adminPage && el.scrollIntoView) {
       try { el.scrollIntoView({block: 'nearest', inline: 'nearest'}); }
@@ -71,7 +75,21 @@
   }
   document.addEventListener('focusin', function (event) {
     if (editing && editing !== event.target) { editing.removeAttribute('data-editing'); editing = null; }
+    if (event.target.hasAttribute('data-card') && !pointerFocus) { centerCard(event.target); }
     remember(event.target);
+  });
+  // A stationary pointer must not compete with remote focus after a row scrolls.
+  document.addEventListener('mousemove', function (event) {
+    if (event.clientX === pointerX && event.clientY === pointerY) { return; }
+    pointerX = event.clientX; pointerY = event.clientY;
+    var card = event.target;
+    while (card && (!card.hasAttribute || !card.hasAttribute('data-card'))) { card = card.parentNode; }
+    if (!card || card === document.activeElement) { return; }
+    pointerFocus = true;
+    try {
+      try { card.focus({preventScroll: true}); }
+      catch (error) { card.focus(); }
+    } finally { pointerFocus = false; }
   });
   document.addEventListener('keydown', function (event) {
     var code = event.keyCode, active = document.activeElement;
@@ -146,7 +164,7 @@
     focus(best); event.preventDefault();
   });
   if (!document.getElementById('player') && (document.body.className.indexOf('tv-browse') !== -1 || adminPage)) {
-    var target = document.querySelector('[autofocus]') || document.querySelector('[data-initial-focus]');
+    var target = document.querySelector('[autofocus]') || document.querySelector('[data-initial-focus]') || document.querySelector('[data-card]');
     if (!document.querySelector('[autofocus]')) {
       try {
         var saved = JSON.parse(sessionStorage.getItem('myflix-focus:' + location.pathname + location.search));

@@ -51,6 +51,11 @@ def initialize(path):
             CREATE TABLE IF NOT EXISTS artwork (
                 key TEXT PRIMARY KEY, retry_at INTEGER NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS discovery_feeds (
+                name TEXT PRIMARY KEY, payload TEXT NOT NULL DEFAULT '[]',
+                updated INTEGER NOT NULL DEFAULT 0, next_check INTEGER NOT NULL DEFAULT 0,
+                error INTEGER NOT NULL DEFAULT 0
+            );
             CREATE TABLE IF NOT EXISTS season_state (
                 root TEXT NOT NULL, series TEXT NOT NULL, season INTEGER NOT NULL,
                 watched INTEGER NOT NULL DEFAULT 0,

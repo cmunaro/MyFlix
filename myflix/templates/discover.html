@@ -1,0 +1,20 @@
+{% extends 'tv.html' %}
+{% block title %}{{ item.title }} · MyFlix{% endblock %}
+{% block content %}
+<section class="hero discovery-detail">
+  {% if item.backdrop or item.poster %}<img class="hero-image" src="{{ item.backdrop or item.poster }}" alt="">{% endif %}
+  <div class="hero-shade"></div>
+  <div class="hero-content">
+    <p class="original">DISCOVER · {{ 'SERIES' if item.kind == 'tv' else 'FILM' }}</p>
+    <h1>{{ item.title }}</h1>
+    {% if item.release %}<p class="hero-kicker">Expected {{ item.release }}</p>{% endif %}
+    <p class="hero-description">{{ item.overview or 'Explore this title in Downloads. Discovery listings do not guarantee provider availability.' }}</p>
+    <div class="hero-actions" data-focus-row>
+      <a class="button play" data-initial-focus href="{{ url_for('admin',section='downloads',q=item.title) }}">Find in Downloads</a>
+      {% if item.trailer %}<a class="button secondary" href="https://www.youtube.com/watch?v={{ item.trailer }}">Watch trailer</a>{% endif %}
+      <a class="button secondary" href="/">Back</a>
+    </div>
+    <p class="discovery-source">Data from <a href="https://simkl.com/{{ 'tv' if item.kind == 'tv' else 'movies' }}/{{ item.id }}/">SIMKL</a>. Rankings reflect SIMKL viewers. Release dates may vary by region.</p>
+  </div>
+</section>
+{% endblock %}

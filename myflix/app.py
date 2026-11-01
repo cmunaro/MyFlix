@@ -13,6 +13,7 @@ from werkzeug.exceptions import HTTPException
 from .artwork import ArtworkCache
 from .catalog import media_path, scan_safely
 from .db import connect, initialize, settings
+from .discovery import DiscoveryCache
 from .engine_jobs import validate_limits
 from .monitoring import SeriesMonitor, episode_status, follow
 from .vibravid import VibraVid, VibraVidError
@@ -58,6 +59,8 @@ def create_app(config=None):
     app.extensions["monitor"] = monitor
     artwork_cache = ArtworkCache(database, vibravid)
     app.extensions["artwork"] = artwork_cache
+    discovery_cache = DiscoveryCache(database)
+    app.extensions["discovery"] = discovery_cache
 
     @app.template_filter("datetime")
     def format_datetime(value):
@@ -78,6 +81,10 @@ def create_app(config=None):
         response.headers["X-Frame-Options"] = "DENY"
         response.headers["Referrer-Policy"] = "same-origin"
         response.headers["Content-Security-Policy"] = "default-src 'self'; style-src 'self'; script-src 'self'; media-src 'self'; img-src 'self'; frame-ancestors 'none'; form-action 'self'"
+        if request.endpoint in ("home", "discover"):
+            response.headers["Content-Security-Policy"] = "default-src 'self'; style-src 'self'; script-src 'self' https://www.youtube.com https://s.ytimg.com; media-src 'self'; img-src 'self' https://simkl.in; frame-src https://www.youtube-nocookie.com; frame-ancestors 'none'; form-action 'self'"
+            # YouTube embeds require an origin referrer, including on a LAN origin.
+            response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
         if not request.path.startswith(("/static/", "/media/")):
             response.headers["Cache-Control"] = "no-store"
         return response
@@ -167,7 +174,37 @@ def create_app(config=None):
         if films and view != "continue":
             shelves.append(("Film", films))
         featured = continuing[0] if continuing else (max(titles, key=lambda r: (r["added_at"], r["id"])) if titles else None)
-        return render_template("home.html", shelves=shelves, featured=featured, query=query, view=view)
+        discovery_shelves = []
+        discovery_notice = ""
+        if not query and not request.args.get("search") and view != "continue":
+            feeds = discovery_cache.read()
+            today = datetime.now(timezone.utc).date().isoformat()
+            for name, label in (("popular_tv", "Most watched series this week on SIMKL"),
+                                ("popular_movie", "Most watched films this week on SIMKL"),
+                                ("upcoming_tv", "Upcoming series & seasons · SIMKL")):
+                if (view == "movies" and name.endswith("tv")) or (view == "series" and name.endswith("movie")):
+                    continue
+                items = [dict(item, href=url_for("discover", kind=item["kind"], identity=item["id"]))
+                         for item in feeds.get(name, {}).get("items", [])
+                         if not name.startswith("upcoming") or item["release"] >= today]
+                if items:
+                    discovery_shelves.append((label, items[:20]))
+            if any(feed["error"] for feed in feeds.values()):
+                discovery_notice = "Discovery updates unavailable. Showing saved results where available."
+            elif not feeds:
+                discovery_notice = "Discovery is loading. Refresh shortly for SIMKL releases and rankings."
+        preview_trailer = next((item["trailer"] for _, items in discovery_shelves
+                                for item in items if item["trailer"]), "")
+        return render_template("home.html", shelves=shelves, discovery_shelves=discovery_shelves, preview_trailer=preview_trailer,
+                               discovery_notice=discovery_notice, featured=featured, query=query, view=view)
+
+    @app.get("/discover/<any(tv,movie):kind>/<int:identity>")
+    def discover(kind, identity):
+        item = next((item for feed in discovery_cache.read().values() for item in feed["items"]
+                     if item["kind"] == kind and item["id"] == identity), None)
+        if not item:
+            abort(404)
+        return render_template("discover.html", item=item)
 
     @app.get("/series/<int:media_id>")
     def series(media_id):

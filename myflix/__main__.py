@@ -34,6 +34,7 @@ def main():
         engine.start()
         threading.Thread(target=index, name="library-index", daemon=True).start()
         threading.Thread(target=app.extensions["artwork"].run, args=(stop,), name="artwork-cache", daemon=True).start()
+        threading.Thread(target=app.extensions["discovery"].run, args=(stop,), name="discovery-cache", daemon=True).start()
         threading.Thread(target=app.extensions["monitor"].run, args=(stop, scan_ready), name="series-monitor", daemon=True).start()
 
         def monitor():
