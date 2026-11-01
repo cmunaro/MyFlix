@@ -11,6 +11,8 @@ import tempfile
 import tomllib
 from pathlib import Path
 
+from .engine_jobs import install_stages, install_tools, read_limits
+
 ROOT = Path(__file__).resolve().parent.parent
 
 
@@ -44,7 +46,10 @@ def prepare(database):
     config["DOWNLOAD"]["thread_count"] = 2
     config["DOWNLOAD"]["write_sidecars"] = True
     config["DOWNLOAD"]["select_video"] = "1080"
-    config["ARR"]["max_concurrent_downloads"] = 1
+    download_limit, processing_limit = read_limits(database)
+    config["ARR"]["max_concurrent_downloads"] = download_limit
+    config["PROCESS"]["use_live_mux"] = False
+    config["DOWNLOAD"]["use_live_decrypt"] = False
     downloads = state / "downloads"
     downloads.mkdir(exist_ok=True)
     config["OUTPUT"]["root_path"] = str(downloads)
@@ -90,6 +95,7 @@ class ManagedEngine:
                        VIBRAVID_OUTPUT_ROOT=str(state / "downloads"),
                        VIBRAVID_BINARY_DIR=str(state / "binary"),
                        VIBRAVID_BOT_SECRET=self.app.config["VIBRAVID_SECRET"],
+                       MYFLIX_DATABASE=self.app.config["DATABASE"],
                        VIBRAVID_SKIP_PRE_RUN_HOOKS="1", DJANGO_SETTINGS_MODULE="webgui.settings",
                        ALLOWED_HOSTS="127.0.0.1", PYTHONDONTWRITEBYTECODE="1")
             # A dedicated readiness pipe avoids fixed ports, stale ready files,
@@ -150,7 +156,12 @@ def serve_engine(runtime, ready_fd):
     from django.core.wsgi import get_wsgi_application
     from waitress.server import create_server
 
+    download_limit, processing_limit = read_limits(os.environ["MYFLIX_DATABASE"])
+    install_tools(runtime.parent, processing_limit)
     application = get_wsgi_application()
+    install_stages(download_limit, processing_limit)
+    from .engine_api import install
+    install()
     server = create_server(application, host="127.0.0.1", port=0, threads=2)
     os.write(ready_fd, f"http://127.0.0.1:{server.effective_port}\n".encode())
     os.close(ready_fd)

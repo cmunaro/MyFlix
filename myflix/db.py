@@ -42,11 +42,48 @@ def initialize(path):
                 watched INTEGER NOT NULL DEFAULT 0,
                 updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
+            CREATE TABLE IF NOT EXISTS media_identity (
+                media_id INTEGER PRIMARY KEY REFERENCES media(id),
+                identity TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS media_identity_key ON media_identity(identity);
+            CREATE INDEX IF NOT EXISTS media_episode ON media(root,series,season,episode);
             CREATE TABLE IF NOT EXISTS artwork (
                 key TEXT PRIMARY KEY, retry_at INTEGER NOT NULL
             );
-            PRAGMA user_version=1;
+            CREATE TABLE IF NOT EXISTS season_state (
+                root TEXT NOT NULL, series TEXT NOT NULL, season INTEGER NOT NULL,
+                watched INTEGER NOT NULL DEFAULT 0,
+                excluded INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY(root,series,season)
+            );
+            CREATE TABLE IF NOT EXISTS subscriptions (
+                id INTEGER PRIMARY KEY, root TEXT NOT NULL, series TEXT NOT NULL,
+                site TEXT NOT NULL, identity TEXT NOT NULL, payload TEXT NOT NULL,
+                mode TEXT NOT NULL DEFAULT 'auto',
+                initialized INTEGER NOT NULL DEFAULT 0,
+                checked_at INTEGER NOT NULL DEFAULT 0,
+                next_check INTEGER NOT NULL DEFAULT 0,
+                error TEXT NOT NULL DEFAULT '',
+                UNIQUE(root,site,identity), UNIQUE(root,series)
+            );
+            CREATE TABLE IF NOT EXISTS discoveries (
+                subscription_id INTEGER NOT NULL REFERENCES subscriptions(id),
+                season INTEGER NOT NULL, episode INTEGER NOT NULL, title TEXT NOT NULL,
+                state TEXT NOT NULL DEFAULT 'new',
+                listed INTEGER NOT NULL DEFAULT 1,
+                PRIMARY KEY(subscription_id,season,episode)
+            );
         """)
+        db.execute("BEGIN IMMEDIATE")
+        db.execute("INSERT OR IGNORE INTO settings VALUES('download_limit','4')")
+        db.execute("INSERT OR IGNORE INTO settings VALUES('processing_limit','1')")
+        if db.execute("PRAGMA user_version").fetchone()[0] < 3:
+            # Follow now includes automatic catch-up. Upgrade existing follows,
+            # retaining pauses, dismissals and all uncertain download reservations.
+            db.execute("UPDATE subscriptions SET mode='auto',next_check=0 WHERE mode='notify'")
+            db.execute("UPDATE discoveries SET state='new' WHERE state='baseline'")
+            db.execute("PRAGMA user_version=3")
 
 
 def settings(db):

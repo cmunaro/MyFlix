@@ -1,0 +1,30 @@
+{% macro season_controls(series,season,rule,return_section='library') %}
+<div class="season-controls">
+  <p>{{ 'Watched' if rule and rule.watched else 'Season watch history' }} · {{ 'Excluded from automatic downloads' if rule and rule.excluded else 'Automatic downloads allowed for unwatched episodes' }}</p>
+  <form method="post" action="{{ url_for('update_season') }}">
+    <input type="hidden" name="csrf" value="{{ session.csrf }}"><input type="hidden" name="series" value="{{ series }}"><input type="hidden" name="season" value="{{ season }}"><input type="hidden" name="return" value="{{ return_section }}">
+    <button class="secondary" name="action" value="{{ 'unwatched' if rule and rule.watched else 'watched' }}">{{ 'Mark season unwatched' if rule and rule.watched else 'Mark season watched & exclude downloads' }}</button>
+    <button class="secondary" name="action" value="{{ 'include' if rule and rule.excluded else 'exclude' }}">{{ 'Allow automatic downloads' if rule and rule.excluded else 'Exclude automatic downloads' }}</button>
+  </form>
+</div>
+{% endmacro %}
+
+{% macro media_editor(item,subscriptions,removed=false) %}
+<details class="catalog-item">
+  <summary><span class="catalog-title">{{ item.title }}{% if item.series %}<small>S{{ item.season }} · E{{ item.episode }}</small>{% endif %}</span><span class="catalog-state {{ 'is-hidden' if item.hidden else 'is-ready' if item.available else 'is-missing' }}">{{ 'Watched · ' if item.watched else '' }}{{ 'Hidden' if item.hidden else 'Ready' if item.available else 'Removed / missing' }}</span><span class="catalog-chevron" aria-hidden="true">⌄</span></summary>
+  <form method="post" action="{{ url_for('edit_media',media_id=item.id) }}" class="edit-form">
+    <input type="hidden" name="csrf" value="{{ session.csrf }}">
+    <label>Title<input name="title" value="{{ item.title }}" required maxlength="300"></label>
+    <label>Series <small>Leave blank for a film</small><input name="series" value="{{ item.series }}" maxlength="300"></label>
+    <div class="episode-fields"><label>Season<input type="number" min="0" max="9999" name="season" value="{{ item.season if item.season is not none else '' }}"></label><label>Episode<input type="number" min="0" max="9999" name="episode" value="{{ item.episode if item.episode is not none else '' }}"></label></div>
+    <label class="checkbox"><input type="checkbox" name="hidden" {% if item.hidden %}checked{% endif %}> Hide from TV</label>
+    <button class="primary">Save changes</button>
+  </form>
+  <p class="filepath">{{ item.path }} · {{ (item.size / 1048576)|round(1) }} MB</p>
+  {% if item.available %}
+  <form method="post" action="{{ url_for('remove_media',media_id=item.id) }}" class="remove-video"><input type="hidden" name="csrf" value="{{ session.csrf }}"><label class="checkbox"><input type="checkbox" name="confirm" value="remove" required> Delete this video file; keep details and history</label><button class="secondary">Remove video from disk</button></form>
+  {% else %}
+  <a class="button secondary" href="{{ url_for('admin',section='following' if item.series and subscriptions|selectattr('series','equalto',item.series)|list else 'downloads',q=item.series or item.title) }}">{{ 'Review episodes & download again' if item.series and subscriptions|selectattr('series','equalto',item.series)|list else 'Find to download again' }}</a>
+  {% endif %}
+</details>
+{% endmacro %}

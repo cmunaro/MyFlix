@@ -156,7 +156,7 @@ class MyFlixTest(unittest.TestCase):
         self.assertEqual(self.client.get("/admin").status_code, 200)
         self.assertEqual(self.client.get("/health").json, {"status": "ok"})
 
-    def test_home_has_only_continue_series_and_film_shelves(self):
+    def test_home_has_continue_not_watched_series_and_film_shelves(self):
         self.configure()
         for name in ("Show.S01E01.mp4", "Show.S01E02.mp4", "Film.mp4"):
             self.video(name)
@@ -165,12 +165,48 @@ class MyFlixTest(unittest.TestCase):
             first = db.execute("SELECT id FROM media WHERE episode=1").fetchone()[0]
         self.post(f"/api/progress/{first}", body={"position": 30, "duration": 100})
         home = self.client.get("/").data.decode()
-        self.assertEqual(re.findall(r"<h2>(.*?)</h2>", home), ["Continue watching", "Series", "Film"])
+        self.assertEqual(re.findall(r"<h2>(.*?)</h2>", home), ["Continue watching", "Not watched", "Series", "Film"])
         self.assertNotIn('aria-label="Browse"', home)
         self.assertNotIn("Recently added", home)
-        self.assertEqual(home.count(f'href="/series/{first}" data-card'), 1)
+        self.assertEqual(home.count(f'href="/series/{first}" data-card'), 2)
         search = self.client.get("/?q=Show").data.decode()
-        self.assertEqual(re.findall(r"<h2>(.*?)</h2>", search), ["Continue watching", "Series"])
+        self.assertEqual(re.findall(r"<h2>(.*?)</h2>", search), ["Continue watching", "Not watched", "Series"])
+
+    def test_not_watched_shelf_tracks_completion_and_available_series(self):
+        self.configure()
+        for name in ("Show.S01E01.mp4", "Show.S01E02.mp4", "Film.mp4",
+                     "Hidden.mp4", "Missing.mp4"):
+            self.video(name)
+        scan(self.database)
+        with connect(self.database) as db:
+            first = db.execute("SELECT id FROM media WHERE episode=1").fetchone()[0]
+            second = db.execute("SELECT id FROM media WHERE episode=2").fetchone()[0]
+            film = db.execute("SELECT id FROM media WHERE title='Film'").fetchone()[0]
+            db.execute("UPDATE media SET hidden=1 WHERE title='Hidden'")
+            db.execute("UPDATE media SET available=0 WHERE title='Missing'")
+
+        def unwatched_ids(url="/"):
+            home = self.client.get(url).data.decode()
+            shelf = re.search(r'<h2>Not watched</h2>(.*?)</section>', home, re.S)
+            return re.findall(r'data-media-id="(\d+)"', shelf[1]) if shelf else []
+
+        self.assertCountEqual(unwatched_ids(), [str(film), str(first)])
+        self.post(f"/api/progress/{first}", body={"position": 96, "duration": 100})
+        self.post(f"/api/progress/{film}", body={"position": 30, "duration": 100})
+        self.assertCountEqual(unwatched_ids(), [str(film), str(second)])
+        self.assertEqual(unwatched_ids("/?q=Show"), [str(second)])
+        self.assertEqual(unwatched_ids("/?view=movies"), [str(film)])
+        self.assertEqual(unwatched_ids("/?view=series"), [str(second)])
+        self.assertEqual(unwatched_ids("/?view=continue"), [])
+        for media_id in (film, second):
+            self.post(f"/api/progress/{media_id}", body={"position": 100, "duration": 100})
+        self.assertNotIn(b"<h2>Not watched</h2>", self.client.get("/").data)
+        self.post(f"/api/progress/{film}", body={"position": 0, "duration": 100, "watched": False})
+        self.assertEqual(unwatched_ids(), [str(film)])
+        other = self.base / "other"
+        other.mkdir()
+        self.post("/admin/settings", {"videos_path": str(other)})
+        self.assertEqual(unwatched_ids(), [])
 
     def test_admin_sections_search_and_action_destinations(self):
         self.configure()

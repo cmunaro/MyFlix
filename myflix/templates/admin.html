@@ -1,5 +1,5 @@
 {% extends 'base.html' %}
-{% block title %}{{ {'downloads':'Downloads','library':'Library','settings':'Settings'}[section] }} · MyFlix{% endblock %}
+{% block title %}{{ {'downloads':'Downloads','library':'Library','settings':'Settings','following':'Following','removed':'Watched and removed'}[section] }} · MyFlix{% endblock %}
 {% block styles %}<link rel="stylesheet" href="{{ url_for('static',filename='admin.css') }}">{% endblock %}
 {% block body_class %}tv-admin{% endblock %}
 {% block scripts %}{% if section == 'downloads' %}<script src="{{ url_for('static',filename='downloads.js') }}" defer></script>{% endif %}{% endblock %}
@@ -8,7 +8,7 @@
   <a class="admin-wordmark" href="/" aria-label="MyFlix home">MYFLIX</a>
   <p class="sidebar-label">YOUR CONTROL ROOM</p>
   <nav aria-label="Manage library">
-    {% for key,label,icon in [('downloads','Downloads','↓'),('library','Library','▤'),('settings','Settings','⚙')] %}
+    {% for key,label,icon in [('downloads','Downloads','↓'),('library','Library','▤'),('following','Following','↻'),('removed','Watched and removed','✓'),('settings','Settings','⚙')] %}
     <a href="{{ url_for('admin',section=key) }}" {% if section == key %}aria-current="page" data-initial-focus{% endif %}><span aria-hidden="true">{{ icon }}</span>{{ label }}</a>
     {% endfor %}
   </nav>
@@ -18,8 +18,8 @@
 {% endblock %}
 {% block content %}
 <header class="admin-heading">
-  <div><p class="admin-kicker">MYFLIX / MANAGE</p><h1>{{ {'downloads':'Downloads','library':'Your library','settings':'Settings'}[section] }}</h1>
-  <p>{{ {'downloads':'Find something great. Make it part of your collection.','library':'Keep your collection organized and ready to watch.','settings':'A few preferences. Everything stays at home.'}[section] }}</p></div>
+  <div><p class="admin-kicker">MYFLIX / MANAGE</p><h1>{{ {'downloads':'Downloads','library':'Your library','settings':'Settings','following':'Following','removed':'Watched and removed'}[section] }}</h1>
+  <p>{{ {'downloads':'Find something great. Make it part of your collection.','library':'Keep your collection organized and ready to watch.','settings':'A few preferences. Everything stays at home.','following':'New episodes from the series you follow.','removed':'Your history stays here after videos leave the library.'}[section] }}</p></div>
   {% if section == 'library' %}<form method="post" action="/admin/scan"><input type="hidden" name="csrf" value="{{ session.csrf }}"><button class="secondary">↻ Scan library</button></form>{% endif %}
 </header>
 {% if notice %}<p role="status" class="notice">{{ notice }}</p>{% endif %}
@@ -29,11 +29,12 @@
   <section class="admin-panel search-panel" aria-labelledby="find-heading">
     <div class="panel-heading"><h2 id="find-heading">Find a title</h2><span class="section-tag">FILMS & SERIES</span></div>
     <form id="download-search" class="download-search">
-      <label class="title-search" for="download-query">What do you want to watch?<input name="query" id="download-query" maxlength="200" placeholder="Search films and series" required autocomplete="off"></label>
+      <label class="title-search" for="download-query">What do you want to watch?<input name="query" id="download-query" value="{{ query }}" maxlength="200" placeholder="Search films and series" required autocomplete="off"></label>
       <label for="download-provider">Look in<select id="download-provider"><option value="__all__">All providers</option></select></label>
       <button class="primary" id="search-downloads">Search</button>
     </form>
     <p id="download-message" class="live-message" role="status" aria-live="polite"></p>
+    <p class="panel-note">Follow a series to automatically download missing unwatched episodes, including existing seasons. Watched episodes and excluded seasons are skipped.</p>
     <div id="download-results" class="download-results"></div>
   </section>
   <section class="admin-panel queue-panel" aria-labelledby="queue-heading">
@@ -45,27 +46,22 @@
   </section>
   <noscript><p class="error">Enable JavaScript to search and manage downloads.</p></noscript>
 </div>
-{% elif section == 'library' %}
-<section class="admin-panel" aria-labelledby="catalog-heading">
-  <div class="panel-heading"><h2 id="catalog-heading">Your collection</h2><span class="section-tag">{{ items|length }} {{ 'VIDEO' if items|length == 1 else 'VIDEOS' }}</span></div>
-  <form class="catalog-search" method="get"><input type="hidden" name="section" value="library"><label for="catalog-query">Find in your library<input id="catalog-query" name="q" value="{{ query }}" placeholder="Film, series or episode title" maxlength="200"></label><button class="secondary">Find</button>{% if query %}<a class="button secondary" href="{{ url_for('admin',section='library') }}">Clear</a>{% endif %}</form>
-  <p class="panel-note">Select a title to edit its details. Hidden titles stay on disk.</p>
-  {% for item in items %}
-  <details class="catalog-item">
-    <summary><span class="catalog-title">{{ item.series or item.title }}{% if item.series %}<small>S{{ item.season }} · E{{ item.episode }} — {{ item.title }}</small>{% endif %}</span><span class="catalog-state {{ 'is-hidden' if item.hidden else 'is-ready' if item.available else 'is-missing' }}">{{ 'Hidden' if item.hidden else 'Ready' if item.available else 'Missing' }}</span><span class="catalog-chevron" aria-hidden="true">⌄</span></summary>
-    <form method="post" action="{{ url_for('edit_media',media_id=item.id) }}" class="edit-form">
-      <input type="hidden" name="csrf" value="{{ session.csrf }}">
-      <label>Title<input name="title" value="{{ item.title }}" required maxlength="300"></label>
-      <label>Series <small>Leave blank for a film</small><input name="series" value="{{ item.series }}" maxlength="300"></label>
-      <div class="episode-fields"><label>Season<input type="number" min="0" max="9999" name="season" value="{{ item.season if item.season is not none else '' }}"></label><label>Episode<input type="number" min="0" max="9999" name="episode" value="{{ item.episode if item.episode is not none else '' }}"></label></div>
-      <label class="checkbox"><input type="checkbox" name="hidden" {% if item.hidden %}checked{% endif %}> Hide from TV</label>
-      <button class="primary">Save changes</button>
-    </form>
-    <p class="filepath">{{ item.path }} · {{ (item.size / 1048576)|round(1) }} MB</p>
-  </details>
-  {% else %}<div class="admin-empty"><h3>{{ 'No matching titles' if query else 'Your collection starts here' }}</h3><p>{{ 'Try a different film or series name.' if query else 'Find a film or series in Downloads, or choose your videos folder in Settings.' }}</p><a class="button primary" href="{{ url_for('admin',section='downloads') }}">Find a title</a></div>{% endfor %}
-</section>
+{% elif section in ('library','removed') %}
+{% include 'library.html' %}
+{% elif section == 'following' %}
+{% include 'following.html' %}
 {% else %}
+<section class="admin-panel" aria-labelledby="download-limits-heading">
+  <div class="panel-heading"><h2 id="download-limits-heading">Download and processing limits</h2><span class="section-tag">PERFORMANCE</span></div>
+  <p>Download videos in parallel while limiting conversion and muxing work.</p>
+  <form method="post" action="{{ url_for('save_download_limits') }}" class="settings-form">
+    <input type="hidden" name="csrf" value="{{ session.csrf }}">
+    <label>Simultaneous downloads<input type="number" name="download_limit" min="1" max="10" value="{{ config.download_limit }}" required></label>
+    <label>Simultaneous processing jobs<input type="number" name="processing_limit" min="1" max="10" value="{{ config.processing_limit }}" required></label>
+    <button class="primary">Save limits</button>
+  </form>
+  <p class="panel-note">Default: 4 downloads and 1 processing job. Changes apply after restarting MyFlix. Finished downloads wait for processing, then appear in the library. Higher limits use more RAM and temporary disk space.</p>
+</section>
 <section class="admin-panel" aria-labelledby="folder-heading">
   <div class="panel-heading"><h2 id="folder-heading">Library folder</h2><span class="section-tag">STORAGE</span></div>
   <p>Where completed films and episodes live.</p>

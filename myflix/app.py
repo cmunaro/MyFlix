@@ -5,6 +5,7 @@ import re
 import secrets
 import threading
 from pathlib import Path
+from datetime import datetime, timezone
 
 from flask import Flask, abort, jsonify, redirect, render_template, request, send_file, session, url_for
 from werkzeug.exceptions import HTTPException
@@ -12,6 +13,8 @@ from werkzeug.exceptions import HTTPException
 from .artwork import ArtworkCache
 from .catalog import media_path, scan_safely
 from .db import connect, initialize, settings
+from .engine_jobs import validate_limits
+from .monitoring import SeriesMonitor, episode_status, follow
 from .vibravid import VibraVid, VibraVidError
 
 
@@ -51,8 +54,14 @@ def create_app(config=None):
     app.extensions["scan"] = run_scan
     vibravid = VibraVid(app.config["VIBRAVID_ADDRESS"], app.config["VIBRAVID_SECRET"])
     app.extensions["vibravid"] = vibravid
+    monitor = SeriesMonitor(database, vibravid)
+    app.extensions["monitor"] = monitor
     artwork_cache = ArtworkCache(database, vibravid)
     app.extensions["artwork"] = artwork_cache
+
+    @app.template_filter("datetime")
+    def format_datetime(value):
+        return datetime.fromtimestamp(value, timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
 
     @app.before_request
     def protect():
@@ -75,13 +84,13 @@ def create_app(config=None):
 
     @app.errorhandler(HTTPException)
     def http_error(error):
-        if request.path.startswith(("/api/", "/admin/vibravid/")):
+        if request.is_json or request.path.startswith(("/api/", "/admin/vibravid/")):
             return jsonify(error=error.description), error.code
         return render_template("error.html", message=error.description), error.code
 
     @app.errorhandler(ValueError)
     def invalid(error):
-        if request.path.startswith(("/api/", "/admin/vibravid/")):
+        if request.is_json or request.path.startswith(("/api/", "/admin/vibravid/")):
             return jsonify(error=str(error)), 400
         return render_template("error.html", message=str(error)), 400
 
@@ -141,6 +150,9 @@ def create_app(config=None):
         shelves = []
         if continuing:
             shelves.append(("Continue watching", continuing))
+        not_watched = [title for title in titles if not title["watched"]]
+        if not_watched and view != "continue":
+            shelves.append(("Not watched", not_watched))
         if shows and view != "continue":
             shelves.append(("Series", list(shows.values())))
         if films and view != "continue":
@@ -231,17 +243,135 @@ def create_app(config=None):
     @app.get("/admin")
     def admin():
         section = request.args.get("section", "downloads")
-        if section not in ("downloads", "library", "settings"):
+        if section not in ("downloads", "library", "settings", "following", "removed"):
             section = "downloads"
         query = request.args.get("q", "").strip()[:200]
         with connect(database) as db:
             config = settings(db)
-            items = db.execute("SELECT * FROM media WHERE root=? ORDER BY series,season,episode,title",
-                               (config.get("videos_path", ""),)).fetchall()
+            items = [dict(row) for row in db.execute("""SELECT m.*,COALESCE(p.watched,0) watched
+                FROM media m LEFT JOIN progress p ON p.media_id=m.id
+                WHERE root=? ORDER BY series,season,episode,title""", (config["videos_path"],))]
+            subscriptions = [dict(row) for row in db.execute("SELECT * FROM subscriptions WHERE root=? ORDER BY series",
+                                                            (config["videos_path"],))]
+            for subscription in subscriptions if section == "following" else []:
+                subscription["episodes"] = [dict(row) for row in db.execute(
+                    "SELECT * FROM discoveries WHERE subscription_id=? ORDER BY season,episode", (subscription["id"],))]
+                for episode in subscription["episodes"]:
+                    episode.update(episode_status(db, subscription, episode["season"], episode["episode"]))
+                subscription["seasons"] = sorted({e["season"] for e in subscription["episodes"]})
+            rules = {(r["series"], r["season"]): dict(r) for r in db.execute(
+                "SELECT * FROM season_state WHERE root=?", (config["videos_path"],))}
+        if section == "removed":
+            items = [item for item in items if item["watched"] and not item["available"]]
         if query:
             items = [item for item in items if query.casefold() in (item["title"] + " " + item["series"]).casefold()]
-        return render_template("admin.html", config=config, items=items, section=section,
-                               query=query, notice=request.args.get("notice", ""))
+        groups = {}
+        for item in items:
+            if item["series"]:
+                groups.setdefault(item["series"], {}).setdefault(item["season"], []).append(item)
+        return render_template("admin.html", config=config, items=items, groups=groups, rules=rules,
+                               subscriptions=subscriptions, section=section, query=query,
+                               notice=request.args.get("notice", ""))
+
+    @app.post("/admin/follow")
+    def follow_series():
+        body = request.get_json()
+        if not isinstance(body, dict):
+            abort(400)
+        follow(database, body.get("site"), body.get("payload"), body.get("series"))
+        return jsonify(ok=True)
+
+    @app.post("/admin/following/<int:subscription_id>")
+    def update_subscription(subscription_id):
+        mode = request.form.get("mode")
+        if mode not in ("notify", "auto", "paused"):
+            raise ValueError("Choose notify, automatic downloads, or paused")
+        with connect(database) as db:
+            result = db.execute("UPDATE subscriptions SET mode=?,next_check=0 WHERE id=? AND root=?",
+                                (mode, subscription_id, settings(db)["videos_path"]))
+            if not result.rowcount:
+                abort(404)
+        return redirect(url_for("admin", section="following", notice="Preferences saved. Checks run in the background."))
+
+    @app.post("/admin/following/<int:subscription_id>/<int:season>/<int:episode>")
+    def discovery_action(subscription_id, season, episode):
+        action = request.form.get("action")
+        if action == "download":
+            try:
+                monitor.download(subscription_id, season, episode, include_watched=request.form.get("include_watched") == "1")
+            except VibraVidError as error:
+                raise ValueError(str(error)) from error
+        elif action in ("dismiss", "retry"):
+            with monitor.download_lock, connect(database) as db:
+                db.execute("BEGIN IMMEDIATE")
+                subscription = db.execute("SELECT * FROM subscriptions WHERE id=? AND root=?",
+                    (subscription_id, settings(db)["videos_path"])).fetchone()
+                if not subscription:
+                    abort(404)
+                if action == "retry" and request.form.get("queue_checked") != "1":
+                    raise ValueError("Check the engine queue before allowing another attempt")
+                states = ("new", "manual", "dismissed", "downloaded") if action == "dismiss" else ("submitted", "uncertain", "submitting")
+                placeholders = ",".join("?" for _ in states)
+                result = db.execute(f"""UPDATE discoveries SET state=? WHERE subscription_id=? AND season=? AND episode=?
+                    AND state IN ({placeholders})""",
+                    ("manual" if action == "retry" else "dismissed", subscription_id, season, episode, *states))
+                if not result.rowcount:
+                    abort(404)
+        else:
+            raise ValueError("Unknown episode action")
+        return redirect(url_for("admin", section="following", notice="Episode updated."))
+
+    @app.post("/admin/season")
+    def update_season():
+        series = request.form.get("series", "").strip()
+        season = request.form.get("season", "")
+        action = request.form.get("action")
+        if not series or len(series) > 300 or not re.fullmatch(r"\d{1,4}", season) or action not in ("watched", "unwatched", "exclude", "include"):
+            raise ValueError("Choose a series, season, and valid action")
+        season = int(season)
+        with connect(database) as db:
+            db.execute("BEGIN IMMEDIATE")
+            root = settings(db)["videos_path"]
+            known = db.execute("""SELECT 1 FROM media WHERE root=? AND series=? AND season=?
+                UNION SELECT 1 FROM subscriptions s JOIN discoveries d ON d.subscription_id=s.id
+                WHERE s.root=? AND s.series=? AND d.season=?""", (root, series, season, root, series, season)).fetchone()
+            if not known:
+                abort(404)
+            db.execute("INSERT OR IGNORE INTO season_state(root,series,season) VALUES(?,?,?)", (root, series, season))
+            if action in ("watched", "unwatched"):
+                watched = action == "watched"
+                db.execute("UPDATE season_state SET watched=? WHERE root=? AND series=? AND season=?", (watched, root, series, season))
+                if watched:
+                    db.execute("UPDATE season_state SET excluded=1 WHERE root=? AND series=? AND season=?", (root, series, season))
+                db.execute("""INSERT INTO progress(media_id,watched)
+                    SELECT id,? FROM media WHERE root=? AND series=? AND season=?
+                    ON CONFLICT(media_id) DO UPDATE SET watched=excluded.watched,updated_at=CURRENT_TIMESTAMP""",
+                           (watched, root, series, season))
+            else:
+                db.execute("UPDATE season_state SET excluded=? WHERE root=? AND series=? AND season=?", (action == "exclude", root, series, season))
+        return redirect(url_for("admin", section="following" if request.form.get("return") == "following" else "library",
+                                notice="Season updated. Marking unwatched does not clear its download exclusion."))
+
+    @app.post("/admin/media/<int:media_id>/remove")
+    def remove_media(media_id):
+        if request.form.get("confirm") != "remove":
+            raise ValueError("Confirm removal of this video file")
+        with scan_lock, connect(database) as db:
+            db.execute("BEGIN IMMEDIATE")
+            item = db.execute("SELECT * FROM media WHERE id=? AND root=?", (media_id, settings(db)["videos_path"])).fetchone()
+            if not item:
+                abort(404)
+            try:
+                path = media_path(item["root"], item["path"])
+                if path != Path(item["root"]).resolve(strict=True) / item["path"]:
+                    raise ValueError("Refusing to remove a symlink target")
+                path.unlink()
+            except FileNotFoundError:
+                pass
+            except (OSError, ValueError) as error:
+                raise ValueError("Could not remove video safely. Catalog and history preserved.") from error
+            db.execute("UPDATE media SET available=0 WHERE id=?", (media_id,))
+        return redirect(url_for("admin", section="library", notice="Video removed. Details and watch history retained."))
 
     @app.post("/admin/settings")
     def save_settings():
@@ -261,9 +391,18 @@ def create_app(config=None):
             db.execute("BEGIN IMMEDIATE")
             if settings(db).get("videos_path") != str(root):
                 db.execute("UPDATE media SET available=0")
+                db.execute("DELETE FROM settings WHERE key='last_scan'")
             db.execute("INSERT OR REPLACE INTO settings VALUES('videos_path',?)", (str(root),))
             db.execute("DELETE FROM settings WHERE key='vibravid_url'")
         return redirect(url_for("admin", section="settings", notice="Folder saved. Open Library to scan for files."))
+
+    @app.post("/admin/settings/downloads")
+    def save_download_limits():
+        downloads, processing = validate_limits(request.form.get("download_limit"), request.form.get("processing_limit"))
+        with connect(database) as db:
+            db.execute("INSERT OR REPLACE INTO settings VALUES('download_limit',?)", (str(downloads),))
+            db.execute("INSERT OR REPLACE INTO settings VALUES('processing_limit',?)", (str(processing),))
+        return redirect(url_for("admin", section="settings", notice="Limits saved. Restart MyFlix to apply them; current jobs continue with their existing limits."))
 
     @app.route("/admin/vibravid/<action>", methods=["GET", "POST"])
     def downloads_api(action):

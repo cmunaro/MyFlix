@@ -18,6 +18,7 @@ class VibraVid:
     READ = {"sites": "api/bot/sites/", "status": "api/bot/status/",
             "queue": "api/get-downloads/?history=30"}
     WRITE = {name: f"api/bot/{name}/" for name in ("search", "seasons", "download", "cancel")}
+    INTERNAL = {"episodes": "api/myflix/episodes/"}
 
     def __init__(self, address, secret):
         parts = urlsplit(address)
@@ -29,7 +30,7 @@ class VibraVid:
     def call(self, action, body=None):
         if not self.secret:
             raise VibraVidError("The bundled download engine is not ready. Start MyFlix with mise run dev.")
-        routes = self.READ if body is None else self.WRITE
+        routes = self.READ if body is None else {**self.WRITE, **self.INTERNAL}
         if action not in routes:
             raise ValueError("Unsupported VibraVid operation")
         request = Request(self.address + routes[action],

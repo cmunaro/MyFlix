@@ -1,5 +1,6 @@
 """Filesystem indexing. The configured root owns all media access."""
 import os
+import json
 import re
 import time
 from pathlib import Path
@@ -35,6 +36,11 @@ def media_path(root, relative):
     return path
 
 
+def source_identity(path):
+    title, series, season, episode = identify(Path(path))
+    return json.dumps([series, season, episode] if series else [title])
+
+
 def scan(database):
     # Complete enumeration before any availability updates. An offline mount or
     # unreadable subtree must not turn a whole library into missing media.
@@ -66,12 +72,42 @@ def scan(database):
         db.execute("BEGIN IMMEDIATE")
         if settings(db).get("videos_path") != root_value:
             return 0
+        for row in db.execute("SELECT id,path FROM media WHERE id NOT IN (SELECT media_id FROM media_identity)").fetchall():
+            db.execute("INSERT INTO media_identity VALUES(?,?)", (row["id"], source_identity(row["path"])))
         db.execute("UPDATE media SET available=0")
+        found_paths = {relative for relative, _, _ in found}
+        aliases = {}
+        for row in db.execute("SELECT series,payload FROM subscriptions WHERE root=?", (root_value,)):
+            aliases.setdefault(json.loads(row["payload"]).get("name"), []).append(row["series"])
         for relative, size, (title, series, season, episode) in found:
+            key = source_identity(relative)
+            if len(aliases.get(series, [])) == 1:
+                series = aliases[series][0]
+            existing = db.execute("SELECT id FROM media WHERE root=? AND path=?", (root_value, relative)).fetchone()
+            if not existing:
+                # Reattach an unambiguous returning title to its durable catalog
+                # record, retaining edits, hidden state and playback history.
+                candidates = db.execute("""SELECT m.id,m.path FROM media m JOIN media_identity i
+                    ON i.media_id=m.id WHERE root=? AND i.identity=?""", (root_value, key)).fetchall()
+                candidates = [row for row in candidates if row["path"] not in found_paths]
+                if len(candidates) == 1:
+                    db.execute("UPDATE media SET path=? WHERE id=?", (relative, candidates[0]["id"]))
             db.execute("""INSERT INTO media(root,path,title,series,season,episode,size)
                 VALUES(?,?,?,?,?,?,?) ON CONFLICT(root,path) DO UPDATE SET
                 available=1,size=excluded.size""",
                 (root_value, relative, title, series, season, episode, size))
+            db.execute("""INSERT OR IGNORE INTO media_identity(media_id,identity)
+                SELECT id,? FROM media WHERE root=? AND path=?""", (key, root_value, relative))
+        # A season marked watched also applies to episodes imported later.
+        db.execute("""INSERT INTO progress(media_id,watched)
+            SELECT m.id,1 FROM media m JOIN season_state s
+            ON s.root=m.root AND s.series=m.series AND s.season=m.season
+            WHERE s.watched=1 AND m.id NOT IN (SELECT media_id FROM progress)
+        """)
+        db.execute("""UPDATE discoveries SET state='downloaded' WHERE state IN ('submitted','uncertain')
+            AND EXISTS(SELECT 1 FROM subscriptions s JOIN media m ON m.root=s.root AND m.series=s.series
+                WHERE s.id=discoveries.subscription_id AND m.season=discoveries.season
+                AND m.episode=discoveries.episode AND m.available=1)""")
         db.execute("INSERT OR REPLACE INTO settings VALUES('last_scan',?)", (str(int(time.time())),))
         db.execute("DELETE FROM settings WHERE key='scan_error'")
     return len(found)

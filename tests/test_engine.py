@@ -10,6 +10,7 @@ from deploy.vibravid_publish import main as publish_hook
 from myflix.app import create_app
 from myflix.db import connect
 from myflix.engine import ManagedEngine, prepare
+from myflix.vibravid import VibraVidError
 
 
 class ManagedEngineTest(unittest.TestCase):
@@ -35,7 +36,9 @@ class ManagedEngineTest(unittest.TestCase):
         prepare(self.database)
         config = tomlkit.parse((state / "Conf/config.toml").read_text())
         self.assertEqual(config["DOWNLOAD"]["select_audio"], "eng")
-        self.assertEqual(config["ARR"]["max_concurrent_downloads"], 1)
+        self.assertEqual(config["ARR"]["max_concurrent_downloads"], 4)
+        self.assertFalse(config["PROCESS"]["use_live_mux"])
+        self.assertFalse(config["DOWNLOAD"]["use_live_decrypt"])
         hooks = config["HOOKS"]["post_download"]
         self.assertEqual(len([h for h in hooks if h["name"] == "myflix-publish"]), 1)
         self.assertIn("--database", hooks[0]["args"])
@@ -64,8 +67,10 @@ class ManagedEngineTest(unittest.TestCase):
             client = self.app.extensions["vibravid"]
             self.assertNotIn(":0/", client.address)
             self.assertTrue(client.call("sites")["groups"])
-            self.assertEqual(client.call("status")["slots"]["max"], 1)
+            self.assertEqual(client.call("status")["slots"]["max"], 4)
             self.assertEqual(client.call("queue")["active"], [])
+            with self.assertRaisesRegex(VibraVidError, "HTTP 502"):
+                client.call("episodes", {})  # Installed adapter, no provider request.
             duplicate = ManagedEngine(self.app)
             with self.assertRaisesRegex(RuntimeError, "Another MyFlix instance"):
                 duplicate.start()

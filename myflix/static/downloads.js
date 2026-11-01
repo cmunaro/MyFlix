@@ -17,7 +17,7 @@
   }
   function api(action, body, done) {
     var xhr = new XMLHttpRequest();
-    xhr.open(body === null ? 'GET' : 'POST', '/admin/vibravid/' + action, true);
+    xhr.open(body === null ? 'GET' : 'POST', action === 'follow' ? '/admin/follow' : '/admin/vibravid/' + action, true);
     xhr.setRequestHeader('Accept', 'application/json');
     xhr.timeout = 35000;
     if (body !== null) { xhr.setRequestHeader('Content-Type', 'application/json'); xhr.setRequestHeader('X-CSRF-Token', token); }
@@ -101,6 +101,23 @@
     var payload = item.payload || {};
     var busy = false;
     payload.is_movie = Boolean(item.is_movie);
+    if (!item.is_movie) {
+      var seriesLabel = node('label', 'Library series name (links watch history)');
+      var seriesName = node('input'); seriesName.value = item.title || payload.name || ''; seriesName.maxLength = 300;
+      seriesLabel.appendChild(seriesName); controls.appendChild(seriesLabel);
+      var follow = node('button', 'Follow series'); follow.type = 'button'; controls.appendChild(follow);
+      var following = false;
+      follow.onclick = function () {
+        if (following) { return; }
+        following = true; follow.setAttribute('aria-disabled', 'true');
+        api('follow', {site: item.site, payload: payload, series: seriesName.value}, function (error) {
+          message.textContent = error || 'Following series. Missing unwatched episodes will start downloading automatically within about 30 seconds. Watched episodes and excluded seasons are skipped.';
+          follow.textContent = error ? 'Check Following before retrying' : 'Following';
+        });
+      };
+      var followingLink = node('a', 'Manage followed series', 'button secondary');
+      followingLink.href = '/admin?section=following'; controls.appendChild(followingLink);
+    }
     function download(season, episodes) {
       if (busy) { return; }
       busy = true;
