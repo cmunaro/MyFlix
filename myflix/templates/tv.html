@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="csrf-token" content="{{ session.csrf }}">
+  <title>{% block title %}MyFlix{% endblock %}</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='tv.css') }}">
+  <script src="{{ url_for('static', filename='tv.js') }}" defer></script>
+  {% block scripts %}{% endblock %}
+</head>
+<body class="{% block body_class %}tv-browse{% endblock %}">
+  {% block header %}
+  <header class="tv-header">
+    <a class="wordmark" href="/" aria-label="MyFlix home">MYFLIX</a>
+    <nav aria-label="Browse">
+      {% for key,label in [('all','Home'),('series','TV Shows'),('movies','Movies'),('continue','Continue Watching')] %}
+      <a href="{{ url_for('home', view=key) }}" {% if view == key %}aria-current="page"{% endif %}>{{ label }}</a>
+      {% endfor %}
+    </nav>
+    <a class="search-toggle" href="/?search=1" aria-label="Search library">⌕</a>
+    <a class="profile" href="/admin" aria-label="Manage library">M</a>
+  </header>
+  {% endblock %}
+  <main>{% block content %}{% endblock %}</main>
+</body>
+</html>

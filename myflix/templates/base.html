@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="csrf-token" content="{{ session.csrf }}">
+  <title>{% block title %}MyFlix{% endblock %}</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}">
+  <script src="{{ url_for('static', filename='tv.js') }}" defer></script>
+  {% block scripts %}{% endblock %}
+</head>
+<body>
+  <header class="masthead">
+    <a class="brand" href="/" aria-label="MyFlix home">MY<span>FLIX</span><small>YOUR OWN LITTLE CINEMA</small></a>
+    <nav aria-label="Main navigation"><a href="/">Watch</a><a href="/admin">Manage library</a></nav>
+  </header>
+  <main>{% block content %}{% endblock %}</main>
+  <footer>Stored at home. Ready when you are. <span>MYFLIX / LOCAL LIBRARY</span></footer>
+</body>
+</html>

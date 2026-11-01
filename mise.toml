@@ -1,0 +1,19 @@
+[tools]
+python = "3.12.12"
+uv = "0.13.6"
+
+[env]
+UV_PYTHON_PREFERENCE = "only-system"
+UV_PYTHON_DOWNLOADS = "never"
+
+[tasks.setup]
+run = "python scripts/setup.py"
+
+[tasks.dev]
+run = "uv run --frozen python -m myflix"
+
+[tasks.test]
+run = "uv run --frozen python -m unittest discover -s tests -v"
+
+[tasks.test-tv]
+run = ["mise exec node@22.23.4 -- node tests/tv_navigation.cjs", "mise exec node@22.23.4 -- node tests/player.cjs"]

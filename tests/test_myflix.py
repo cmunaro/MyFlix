@@ -1,0 +1,279 @@
+import errno
+import os
+import tempfile
+import time
+import unittest
+from pathlib import Path
+from unittest.mock import patch
+
+from deploy.vibravid_publish import main as publish_hook, publish
+from myflix.app import create_app
+from myflix.catalog import identify, scan
+from myflix.db import connect, settings
+
+
+class MyFlixTest(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.base = Path(self.temp.name)
+        self.library = self.base / "library"
+        self.library.mkdir()
+        self.database = str(self.base / "myflix.sqlite3")
+        self.app = create_app({"TESTING": True, "DATABASE": self.database, "ADMIN_PASSWORD": "test-password"})
+        self.client = self.app.test_client()
+        self.client.get("/")
+        self.csrf = self.token()
+
+    def tearDown(self):
+        self.temp.cleanup()
+
+    def token(self):
+        with self.client.session_transaction() as session:
+            return session["csrf"]
+
+    def post(self, path, data=None, body=None):
+        if body is not None:
+            return self.client.post(path, json=body, headers={"X-CSRF-Token": self.token()})
+        return self.client.post(path, data={"csrf": self.token(), **(data or {})})
+
+    def login(self):
+        self.assertEqual(self.post("/admin/login", {"password": "test-password"}).status_code, 302)
+
+    def configure(self):
+        self.login()
+        self.assertEqual(self.post("/admin/settings", {"videos_path": str(self.library)}).status_code, 302)
+
+    def video(self, name="Example.mp4", content=b"0123456789"):
+        file = self.library / name
+        file.parent.mkdir(parents=True, exist_ok=True)
+        file.write_bytes(content)
+        os.utime(file, (time.time() - 120, time.time() - 120))
+        return file
+
+    def item(self):
+        with connect(self.database) as db:
+            return dict(db.execute("SELECT * FROM media ORDER BY id LIMIT 1").fetchone())
+
+    def test_import_browse_range_resume_and_watch(self):
+        self.configure()
+        self.video("The.Show.S01E02.Arrival.mp4")
+        self.assertEqual(self.post("/admin/scan").status_code, 302)
+        item = self.item()
+        self.assertEqual((item["series"], item["season"], item["episode"]), ("The Show", 1, 2))
+        self.assertIn(b"The Show", self.client.get("/").data)
+        self.assertIn(b"Arrival", self.client.get(f'/watch/{item["id"]}').data)
+        response = self.client.get(f'/media/{item["id"]}', headers={"Range": "bytes=2-5"})
+        self.assertEqual(response.status_code, 206)
+        self.assertEqual(response.headers["Content-Range"], "bytes 2-5/10")
+        self.assertEqual(response.data, b"2345")
+        response.close()
+        self.assertEqual(self.client.get(f'/media/{item["id"]}', headers={"Range": "bytes=90-100"}).status_code, 416)
+        path = f'/api/progress/{item["id"]}'
+        self.assertEqual(self.post(path, body={"position": 40, "duration": 100}).status_code, 200)
+        self.assertIn(b'data-position="40.0"', self.client.get(f'/watch/{item["id"]}').data)
+        self.assertIn(b"Arrival", self.client.get("/?view=continue").data)
+        self.post(path, body={"position": 96, "duration": 100})
+        self.assertNotIn(b"Arrival", self.client.get("/?view=continue").data)
+        self.post(path, body={"position": 2, "duration": 100})
+        self.assertIn(b"Watched", self.client.get("/").data)
+        self.post(path, body={"position": 0, "duration": 100, "watched": False})
+        self.assertNotIn(b"Watched", self.client.get("/").data)
+        # Navigation beacon uses form encoding rather than JSON.
+        self.assertEqual(self.post(path, {"position": "30", "duration": "100"}).status_code, 200)
+
+    def test_edit_and_progress_survive_missing_and_rescan(self):
+        self.configure()
+        file = self.video()
+        scan(self.database)
+        item = self.item()
+        self.post(f'/api/progress/{item["id"]}', body={"position": 30, "duration": 100})
+        self.post(f'/admin/media/{item["id"]}', {"title": "Corrected", "series": "", "hidden": "on"})
+        scan(self.database)
+        self.assertEqual(self.item()["title"], "Corrected")
+        self.assertEqual(self.client.get(f'/media/{item["id"]}').status_code, 404)
+        file.unlink()
+        scan(self.database)
+        self.assertEqual(self.item()["available"], 0)
+        self.video()
+        scan(self.database)
+        self.assertEqual(self.item()["id"], item["id"])
+        with connect(self.database) as db:
+            self.assertEqual(db.execute("SELECT position FROM progress").fetchone()[0], 30)
+
+    def test_admin_auth_csrf_validation_and_root_switch(self):
+        self.assertEqual(self.client.get("/admin").status_code, 302)
+        self.assertEqual(self.client.post("/admin/scan").status_code, 302)
+        self.assertEqual(self.client.post("/admin/login", data={"password": "test-password"}).status_code, 403)
+        self.assertEqual(self.client.post("/admin/login", data={"csrf": "☃"}).status_code, 403)
+        self.configure()
+        self.assertEqual(self.post("/admin/settings", {"videos_path": "/does-not-exist"}).status_code, 400)
+        # Old external-link settings are ignored and removed on save.
+        self.assertEqual(self.post("/admin/settings", {"videos_path": str(self.library), "vibravid_url": "javascript:alert(1)"}).status_code, 302)
+        self.assertNotIn(b"VibraVid Web URL", self.client.get("/admin").data)
+        self.video()
+        scan(self.database)
+        media_id = self.item()["id"]
+        for body in ({"position": -1, "duration": 100}, {"position": 101, "duration": 100},
+                     {"position": True, "duration": 100}, {"position": 0, "duration": 100, "watched": "false"},
+                     {"position": float("nan"), "duration": 100}):
+            self.assertEqual(self.post(f"/api/progress/{media_id}", body=body).status_code, 400)
+        other = self.base / "other"
+        other.mkdir()
+        self.post("/admin/settings", {"videos_path": str(other)})
+        self.assertEqual(self.client.get(f"/media/{media_id}").status_code, 404)
+
+    def test_symlink_escape_fresh_files_and_failed_scan(self):
+        self.configure()
+        self.video()
+        self.video("fresh.mp4").touch()
+        self.video("hidden.part")
+        outside = self.base / "private.mp4"
+        outside.write_bytes(b"secret")
+        (self.library / "escape.mp4").symlink_to(outside)
+        self.assertEqual(scan(self.database), 1)
+        item = self.item()
+        (self.library / "Example.mp4").unlink()
+        (self.library / "Example.mp4").symlink_to(outside)
+        self.assertEqual(self.client.get(f'/media/{item["id"]}').status_code, 404)
+        self.library.rename(self.base / "offline")
+        self.assertEqual(self.post("/admin/scan").status_code, 400)
+        self.assertEqual(self.item()["available"], 1)
+        with connect(self.database) as db:
+            self.assertIn("unavailable", settings(db)["scan_error"])
+
+    def test_filters_and_next_episode(self):
+        self.configure()
+        for name in ("Show.S01E01.mp4", "Show.S01E02.mp4", "Film.mp4"):
+            self.video(name)
+        scan(self.database)
+        with connect(self.database) as db:
+            first = db.execute("SELECT id FROM media WHERE episode=1").fetchone()[0]
+        self.assertIn(b"Next episode", self.client.get(f"/watch/{first}").data)
+        self.assertNotIn(b"EPISODES", self.client.get("/?view=movies").data)
+        self.assertNotIn(b"Ready to play", self.client.get("/?q=no-match").data)
+        self.assertEqual(self.client.get("/admin").status_code, 200)
+        self.assertEqual(self.client.get("/health").json, {"status": "ok"})
+
+    def test_episode_playback_contract_orders_seasons_and_excludes_hidden_items(self):
+        self.configure()
+        for name in ("Show.S01E01.Start.mp4", "Show.S01E02.Hidden.mp4", "Show.S02E01.Return.mp4", "Film.mp4"):
+            self.video(name)
+        scan(self.database)
+        with connect(self.database) as db:
+            first = db.execute("SELECT id FROM media WHERE season=1 AND episode=1").fetchone()[0]
+            hidden = db.execute("SELECT id FROM media WHERE episode=2").fetchone()[0]
+            last = db.execute("SELECT id FROM media WHERE season=2").fetchone()[0]
+            film = db.execute("SELECT id FROM media WHERE series=''").fetchone()[0]
+            db.execute("UPDATE media SET hidden=1 WHERE id=?", (hidden,))
+        page = self.client.get(f"/watch/{first}").data
+        self.assertNotIn(b'id="watched"', page)
+        self.assertNotIn(b'Mark watched', page)
+        self.assertIn(f'data-next-id="{last}"'.encode(), page)
+        details = self.client.get(f"/api/playback/{first}").json
+        self.assertEqual(details["next"]["id"], last)
+        self.assertEqual(details["next"]["season"], 2)
+        self.assertEqual(details["next"]["watch_url"], f"/watch/{last}")
+        self.assertNotIn("root", details)
+        self.assertNotIn("path", details)
+        self.assertEqual(details["stream_url"], f"/media/{first}")
+        self.assertIsNone(self.client.get(f"/api/playback/{last}").json["next"])
+        self.assertIsNone(self.client.get(f"/api/playback/{film}").json["next"])
+        self.assertEqual(self.client.get(f"/api/playback/{hidden}").status_code, 404)
+        self.post(f"/api/progress/{last}", body={"position": 50, "duration": 100})
+        self.assertEqual(self.client.get(f"/api/playback/{last}").json["position"], 50)
+        self.post(f"/api/progress/{last}", body={"position": 100, "duration": 100})
+        self.assertEqual(self.client.get(f"/api/playback/{last}").json["position"], 0)
+
+    def test_episode_inference(self):
+        self.assertEqual(identify(Path("Show/Season 2/S02E03.mp4")), ("Episode 3", "Show", 2, 3))
+        self.assertEqual(identify(Path("Show.2x03.Title.mp4")), ("Title", "Show", 2, 3))
+
+    def test_tv_series_shelves_artwork_and_hidden_access(self):
+        self.configure()
+        self.video("Show/Season 1/Show.S01E01.Start.mp4")
+        self.video("Show/Season 1/Show.S01E02.Next.mp4")
+        poster = self.library / "Show" / "poster.jpg"
+        poster.write_bytes(b"local-jpeg-fixture")
+        scan(self.database)
+        item = self.item()
+        home = self.client.get("/").data
+        self.assertIn(b'data-rail', home)
+        self.assertNotIn(b'<footer>', home)
+        self.assertIn(f'/series/{item["id"]}'.encode(), home)
+        detail = self.client.get(f'/series/{item["id"]}').data
+        self.assertIn(b"Season 1", detail)
+        self.assertIn(b"Start", detail)
+        self.assertIn(b"Next", detail)
+        response = self.client.get(f'/art/{item["id"]}/poster')
+        self.assertEqual(response.data, b"local-jpeg-fixture")
+        response.close()
+        poster.unlink()
+        outside = self.base / "secret.jpg"
+        outside.write_bytes(b"private")
+        poster.symlink_to(outside)
+        self.assertEqual(self.client.get(f'/art/{item["id"]}/poster').status_code, 404)
+        self.post(f'/admin/media/{item["id"]}', {"title": "Start", "series": "Show", "season": "1", "episode": "1", "hidden": "on"})
+        self.assertEqual(self.client.get(f'/series/{item["id"]}').status_code, 404)
+        self.assertEqual(self.client.get(f'/art/{item["id"]}/poster').status_code, 404)
+
+    def test_completion_hook_is_atomic_confined_and_non_destructive(self):
+        downloads = self.base / "downloads"
+        downloads.mkdir()
+        source = downloads / "Show" / "Show.S01E01.mp4"
+        source.parent.mkdir()
+        source.write_bytes(b"completed")
+        target = publish(source, downloads, self.library)
+        self.assertEqual(target.read_bytes(), b"completed")
+
+        self.assertTrue(source.exists())
+        self.assertEqual(publish(source, downloads, self.library), target)
+        source2 = downloads / "Movie.mp4"
+        source2.write_bytes(b"second")
+        real_link = os.link
+        def cross_device(src, dst):
+            if Path(src) == source2:
+                raise OSError(errno.EXDEV, "different filesystems")
+            return real_link(src, dst)
+        with patch("deploy.vibravid_publish.os.link", side_effect=cross_device):
+            self.assertEqual(publish(source2, downloads, self.library).read_bytes(), b"second")
+        with self.assertRaises(ValueError):
+            publish(target, downloads, self.library)
+        with self.assertRaises(ValueError):
+            publish(source, downloads, downloads)
+        source.unlink()
+        source.write_bytes(b"replacement")
+        with self.assertRaises(FileExistsError):
+            publish(source, downloads, self.library)
+        self.assertEqual(target.read_bytes(), b"completed")
+
+    def test_hook_rejects_symlinked_destination_before_creating_directories(self):
+        downloads = self.base / "downloads"
+        source = downloads / "Show" / "Season 1" / "episode.mp4"
+        source.parent.mkdir(parents=True)
+        source.write_bytes(b"complete")
+        outside = self.base / "outside"
+        outside.mkdir()
+        (self.library / "Show").symlink_to(outside, target_is_directory=True)
+        with self.assertRaises(ValueError):
+            publish(source, downloads, self.library)
+        self.assertFalse((outside / "Season 1").exists())
+
+    def test_hook_publishes_local_artwork_after_success_only(self):
+        downloads = self.base / "downloads"
+        source = downloads / "Show" / "Season 1" / "Show.S01E01.mp4"
+        source.parent.mkdir(parents=True)
+        source.write_bytes(b"video")
+        (downloads / "Show" / "poster.jpg").write_bytes(b"show-poster")
+        (source.parent / "Show.S01E01-thumb.jpg").write_bytes(b"episode-art")
+        args = ["hook", "--downloads", str(downloads), "--library", str(self.library)]
+        with patch("sys.argv", args), patch.dict(os.environ, {"SC_DOWNLOAD_SUCCESS": "0", "SC_DOWNLOAD_PATH": str(source)}):
+            publish_hook()
+        self.assertFalse((self.library / "Show").exists())
+        with patch("sys.argv", args), patch.dict(os.environ, {"SC_DOWNLOAD_SUCCESS": "1", "SC_DOWNLOAD_PATH": str(source)}), patch("builtins.print"):
+            publish_hook()
+        self.assertEqual((self.library / "Show" / "poster.jpg").read_bytes(), b"show-poster")
+        self.assertEqual((self.library / "Show" / "Season 1" / "Show.S01E01-thumb.jpg").read_bytes(), b"episode-art")
+
+
+if __name__ == "__main__":
+    unittest.main()

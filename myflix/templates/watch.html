@@ -1,0 +1,45 @@
+{% extends 'tv.html' %}
+{% block body_class %}tv-player controls-visible{% endblock %}
+{% block header %}{% endblock %}
+{% block title %}{{ item.title }} · MyFlix{% endblock %}
+{% block scripts %}<script src="{{ url_for('static', filename='player.js') }}" defer></script>{% endblock %}
+{% macro icon(name) -%}
+<svg viewBox="0 0 32 32" aria-hidden="true" focusable="false">
+{% if name == 'play' %}<path d="M10 5v22l18-11z"/>
+{% elif name == 'pause' %}<path d="M8 5h6v22H8zm10 0h6v22h-6z"/>
+{% elif name == 'rewind' %}<path d="M12 7H5v7M5 8a12 12 0 1 1-1 13" class="icon-line"/><text x="16" y="22" text-anchor="middle">10</text>
+{% elif name == 'forward' %}<path d="M20 7h7v7m0-6a12 12 0 1 0 1 13" class="icon-line"/><text x="16" y="22" text-anchor="middle">10</text>
+{% elif name == 'volume' %}<path d="M3 12h6l7-7v22l-7-7H3z"/><path d="M21 10a9 9 0 0 1 0 12m4-16a15 15 0 0 1 0 20" class="icon-line"/>
+{% elif name == 'muted' %}<path d="M3 12h6l7-7v22l-7-7H3z"/><path d="m22 11 8 10m0-10-8 10" class="icon-line"/>
+{% elif name == 'fullscreen' %}<path d="M4 12V4h8m8 0h8v8m0 8v8h-8m-8 0H4v-8" class="icon-line"/>
+{% elif name == 'next' %}<path d="m6 6 15 10L6 26zm17 0h4v20h-4z"/>
+{% elif name == 'back' %}<path d="M28 16H4m10-10L4 16l10 10" class="icon-line"/>{% endif %}
+</svg>
+{%- endmacro %}
+{% block content %}
+<div id="player-shell" class="player-shell">
+  <div class="player-wrap"><video id="player" controls playsinline preload="metadata" tabindex="0" src="{{ url_for('stream',media_id=item.id) }}" data-id="{{ item.id }}" data-position="{{ 0 if item.watched else item.position }}" aria-label="{{ item.title }}"></video></div>
+  <header class="watch-overlay" data-player-overlay>
+    <a class="player-icon back" href="/" aria-label="Back to library" title="Back to library">{{ icon('back') }}</a>
+    <div class="watch-heading"><p id="episode-heading">{{ item.series or 'Now playing' }}{% if item.series %} · S{{ item.season }}:E{{ item.episode }}{% endif %}</p><h1 id="episode-title">{{ item.title }}</h1></div>
+  </header>
+  <button id="center-play" class="center-play" data-player-overlay aria-label="Play" title="Play">{{ icon('play') }}</button>
+  <p id="player-status" class="player-message" role="status" aria-live="polite" hidden></p>
+  <div class="watch-controls" data-player-overlay role="group" aria-label="Playback controls">
+    <div class="timeline-row"><div class="timeline-track"><progress id="playback-progress" value="0" max="1" aria-hidden="true"></progress><input id="timeline" type="range" min="0" max="0" step="1" value="0" aria-label="Seek video" disabled></div><span id="remaining-time" aria-label="Time remaining">0:00</span></div>
+    <div class="player-actions">
+      <button id="toggle-play" class="player-icon" aria-label="Play" title="Play"><span class="play-symbol">{{ icon('play') }}</span><span class="pause-symbol" hidden>{{ icon('pause') }}</span></button>
+      <button id="rewind" class="player-icon" aria-label="Back 10 seconds" title="Back 10 seconds">{{ icon('rewind') }}</button>
+      <button id="forward" class="player-icon" aria-label="Forward 10 seconds" title="Forward 10 seconds">{{ icon('forward') }}</button>
+      <button id="mute" class="player-icon" aria-label="Mute" title="Mute"><span class="volume-symbol">{{ icon('volume') }}</span><span class="muted-symbol" hidden>{{ icon('muted') }}</span></button>
+      <span id="playing-title" class="playing-title">{% if item.series %}<b>S{{ item.season }}:E{{ item.episode }}</b> {{ item.title }}{% else %}{{ item.title }}{% endif %}</span>
+      <a id="next-episode" class="player-icon" href="{{ url_for('watch',media_id=next_item.id) if next_item else '#' }}" aria-label="Next episode" title="Next episode" {% if not next_item %}hidden{% endif %}>{{ icon('next') }}</a>
+      <button id="fullscreen" class="player-icon" aria-label="Fullscreen" title="Fullscreen">{{ icon('fullscreen') }}</button>
+    </div>
+  </div>
+  <aside id="up-next" class="up-next" data-next-id="{{ next_item.id if next_item else '' }}" hidden aria-label="Up next">
+    <p>Up next</p><strong id="next-episode-info">{% if next_item %}S{{ next_item.season }}:E{{ next_item.episode }} · {{ next_item.title }}{% endif %}</strong>
+    <a id="next-prompt" href="{{ url_for('watch',media_id=next_item.id) if next_item else '#' }}">▶ &nbsp; Next episode</a>
+  </aside>
+</div>
+{% endblock %}

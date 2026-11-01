@@ -1,0 +1,6 @@
+{% extends 'base.html' %}
+{% block content %}
+<section class="login"><p class="eyebrow">BEHIND THE SCENES</p><h1>Your library,<br>your way.</h1><p>Sign in to manage your catalog and downloads.</p>
+{% if error %}<p role="alert" class="error">{{ error }}</p>{% endif %}
+<form method="post"><input type="hidden" name="csrf" value="{{ session.csrf }}"><label>Admin password<input type="password" name="password" autocomplete="current-password" required autofocus></label><button class="primary">Sign in →</button></form></section>
+{% endblock %}

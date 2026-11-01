@@ -1,0 +1,10 @@
+{% extends 'tv.html' %}
+{% from 'cards.html' import shelf %}
+{% block title %}{{ featured.series }} · MyFlix{% endblock %}
+{% block content %}
+<section class="hero series-hero tone-{{ featured.id % 5 }}">
+  {% if featured.backdrop or featured.poster %}<img class="hero-image" src="{{ featured.backdrop or featured.poster }}" alt="">{% endif %}
+  <div class="hero-shade"></div><div class="hero-content"><p class="original"><b>M</b> SERIES</p><h1>{{ featured.series }}</h1><p class="hero-kicker">{{ seasons|length }} {{ 'season' if seasons|length == 1 else 'seasons' }} in your library</p><p class="hero-description">Choose an episode below.<br>Your place is saved as you watch.</p><div class="hero-actions" data-focus-row><a class="button play" data-initial-focus href="{{ url_for('watch',media_id=featured.id) }}">▶ &nbsp;{{ 'Resume' if featured.position > 0 and not featured.watched else 'Play' }} S{{ featured.season }}:E{{ featured.episode }}</a><a class="button secondary" href="/">← Back</a></div></div>
+</section>
+<div class="tv-shelves">{% for season,episodes in seasons.items() %}{{ shelf('Season ' ~ season,episodes,true) }}{% endfor %}</div>
+{% endblock %}

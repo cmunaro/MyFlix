@@ -1,0 +1,16 @@
+[project]
+name = "myflix"
+version = "0.1.0"
+description = "A small household media library for VIDAA TVs and Raspberry Pi"
+requires-python = ">=3.12,<3.13"
+dependencies = ["Flask==3.1.2", "waitress==3.0.2", "vibravid[gui]==1.4.9"]
+
+[tool.uv]
+package = false
+
+[tool.uv.sources]
+vibravid = { path = ".vibravid" }
+
+[tool.myflix.vibravid]
+repository = "https://github.com/AstraeLabs/VibraVid.git"
+revision = "3a5045587a4867169235098536254961f5e8fb3f"

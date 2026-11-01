@@ -1,0 +1,26 @@
+{% extends 'tv.html' %}
+{% from 'cards.html' import shelf %}
+{% block content %}
+{% if query or request.args.get('search') %}
+<section class="tv-search"><form method="get"><label for="search">Search your library</label><div><input id="search" name="q" value="{{ query }}" placeholder="Titles, shows, movies" autofocus autocomplete="off"><button>Search</button><a class="button secondary" href="/">Close</a></div></form></section>
+{% elif featured %}
+<section class="hero tone-{{ featured.id % 5 }}" aria-label="Featured title">
+  {% if featured.backdrop or featured.poster %}<img class="hero-image" src="{{ featured.backdrop or featured.poster }}" alt="">{% endif %}
+  <div class="hero-shade"></div>
+  <div class="hero-content">
+    <p class="original"><b>M</b> {{ 'SERIES' if featured.series else 'FILM' }}</p>
+    <h1>{{ featured.series or featured.title }}</h1>
+    <p class="hero-kicker">{{ 'Pick up where you left off' if featured.position > 0 and not featured.watched else 'Your next great watch' }}</p>
+    <p class="hero-description">{% if featured.series %}Season {{ featured.season }} · Episode {{ featured.episode }}<br>{{ featured.title }}{% else %}Make tonight a movie night.<br>From your collection. Ready to play.{% endif %}</p>
+    <div class="hero-actions" data-focus-row><a class="button play" data-initial-focus href="{{ url_for('watch', media_id=featured.id) }}">▶ &nbsp;{{ 'Resume' if featured.position > 0 and not featured.watched else 'Play' }}</a>{% if featured.series %}<a class="button secondary" href="{{ url_for('series',media_id=featured.id) }}">ⓘ &nbsp; Episodes</a>{% endif %}</div>
+  </div>
+  <span class="hero-label">YOUR COLLECTION</span>
+</section>
+{% endif %}
+<div class="tv-shelves {{ 'without-hero' if query or request.args.get('search') else '' }}">
+  {% for label,items in shelves %}{{ shelf(label,items,label == 'Continue watching') }}{% endfor %}
+  {% if not shelves %}
+  <section class="tv-empty"><span class="empty-monogram" aria-hidden="true">M</span><h1>{{ 'No titles found' if query else 'Your cinema is waiting' }}</h1><p>{{ 'Try another movie or show.' if query else 'Add completed films and episodes from the admin library.' }}</p><a class="button play" data-initial-focus href="{{ '/' if query or view != 'all' else '/admin' }}">{{ 'Browse all titles' if query or view != 'all' else 'Open library admin' }}</a></section>
+  {% endif %}
+</div>
+{% endblock %}
