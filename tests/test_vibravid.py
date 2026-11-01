@@ -2,6 +2,8 @@ import json
 import tempfile
 import threading
 import unittest
+from unittest.mock import MagicMock, patch
+from urllib.error import URLError
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -114,6 +116,43 @@ class IntegrationTest(unittest.TestCase):
             client.call("sites")
         with self.assertRaisesRegex(VibraVidError, "bundled download engine"):
             VibraVid(self.address, "").call("sites")
+
+
+class MetadataTimeoutTest(unittest.TestCase):
+    def test_slow_all_season_lookup_has_time_to_complete(self):
+        response = MagicMock()
+        response.__enter__.return_value.read.return_value = b'{"episodes":[{"season":1,"episode":1}]}'
+
+        def slow_metadata(request, *, timeout):
+            # Model a provider that needs 45 seconds without sleeping in tests.
+            if timeout < 45:
+                raise TimeoutError()
+            return response
+
+        with patch("myflix.vibravid.build_opener") as factory:
+            factory.return_value.open.side_effect = slow_metadata
+            result = VibraVid("http://127.0.0.1:8091", "secret").call(
+                "episodes", {"site": "example", "payload": {"name": "Long series"}})
+        self.assertEqual(result["episodes"], [{"season": 1, "episode": 1}])
+        self.assertEqual(factory.return_value.open.call_count, 1)
+
+    def test_other_requests_keep_normal_timeout_and_never_retry(self):
+        for action, body in (("queue", None), ("download", {"site": "example"})):
+            with self.subTest(action=action), patch("myflix.vibravid.build_opener") as factory:
+                factory.return_value.open.side_effect = TimeoutError()
+                with self.assertRaisesRegex(VibraVidError, "Check the queue"):
+                    VibraVid("http://127.0.0.1:8091", "secret").call(action, body)
+                self.assertEqual(factory.return_value.open.call_count, 1)
+                self.assertEqual(factory.return_value.open.call_args.kwargs["timeout"], 30)
+
+    def test_episode_timeout_identifies_the_failed_lookup_safely(self):
+        for error in (TimeoutError("private detail"), URLError(TimeoutError("private detail"))):
+            with self.subTest(error=type(error)), patch("myflix.vibravid.build_opener") as factory:
+                factory.return_value.open.side_effect = error
+                with self.assertRaisesRegex(VibraVidError, "Episode lookup timed out") as caught:
+                    VibraVid("http://127.0.0.1:8091", "secret").call("episodes", {})
+                self.assertNotIn("private detail", str(caught.exception))
+                self.assertEqual(factory.return_value.open.call_count, 1)
 
 
 if __name__ == "__main__":

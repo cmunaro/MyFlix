@@ -73,7 +73,7 @@ Catalog edits and watch progress survive rescans and missing files. An unavailab
 
 ### Follow a series
 
-In **Downloads**, find a series, set **Library series name** to its existing catalog name if applicable, and select **Follow series**. MyFlix checks all seasons every four hours while running. **Save & check now** schedules an earlier check, normally within about 30 seconds.
+In **Downloads**, find a series, set **Library series name** to its existing catalog name if applicable, and select **Follow series**. MyFlix checks all seasons every four hours while running. **Save & check now** schedules an earlier check, normally within about 30 seconds. Loading all seasons of a long-running series can take several minutes; episode lookups allow up to five minutes before reporting a timeout.
 
 Following can catch up on existing episodes as well as discover new ones. In **Following**, pause monitoring or choose notification-only mode. Use **mark a season watched & exclude downloads** to skip seasons you have already seen. Notifications stay inside MyFlix.
 
