@@ -3,11 +3,15 @@ const fs = require('node:fs');
 const vm = require('node:vm');
 function screen(blockFirstPlay = false, options = {}) {
   const elements = {}, timers = new Map(), requests = [], beacons = [], loads = [], fullscreenRequests = [];
-  let document, now = 0, timerId = 0;
+  let document, now = 0, timerId = 0, created = 0;
   function element(id, parent = null) {
     const attrs = {}, listeners = {}, symbols = {};
-    const el = {id, parentNode: parent, hidden: false, disabled: false, offsetWidth: 54, offsetHeight: 54,
+    const el = {id, parentNode: parent, children: [], hidden: false, disabled: false, offsetWidth: 54, offsetHeight: 54,
       addEventListener(name, fn) { (listeners[name] ||= []).push(fn); },
+      removeEventListener(name, fn) { listeners[name] = (listeners[name] || []).filter(listener => listener !== fn); },
+      appendChild(child) { child.parentNode = this; this.children.push(child); return child; },
+      set textContent(value) { this.children.forEach(child => { child.parentNode = null; }); this.children = []; this._text = value; },
+      get textContent() { return this._text || ''; },
       emit(name, event = {}) { event.target ||= this; event.type ||= name; (listeners[name] || []).forEach(fn => fn(event)); },
       setAttribute(key, value) { attrs[key] = String(value); }, getAttribute(key) { return attrs[key] ?? null; },
       hasAttribute(key) { return Object.hasOwn(attrs, key); },
@@ -28,7 +32,13 @@ function screen(blockFirstPlay = false, options = {}) {
   const center = element('center-play', shell);
   element('back', header);
   element('player-status', shell);
-  for (const id of ['toggle-play', 'rewind', 'forward', 'mute', 'next-episode', 'fullscreen', 'timeline', 'remaining-time', 'playback-progress']) element(id, overlay);
+  for (const id of ['toggle-play', 'rewind', 'forward', 'mute', 'track-settings', 'next-episode', 'fullscreen', 'timeline', 'remaining-time', 'playback-progress']) element(id, overlay);
+  const trackPanel = element('track-panel', shell); trackPanel.hidden = true;
+  const audioGroup = element('audio-track-group', trackPanel), subtitleGroup = element('subtitle-track-group', trackPanel);
+  const audioOptions = element('audio-track-options', audioGroup), subtitleOptions = element('subtitle-track-options', subtitleGroup);
+  const closeTracks = element('close-tracks', trackPanel);
+  element('track-message', trackPanel);
+  trackPanel.querySelectorAll = () => [...audioOptions.children, ...subtitleOptions.children, closeTracks];
   const upNext = element('up-next', shell);
   const nextId = options.nextId === undefined ? '2' : options.nextId;
   upNext.setAttribute('data-next-id', nextId);
@@ -36,8 +46,9 @@ function screen(blockFirstPlay = false, options = {}) {
   element('next-prompt', upNext);
   for (const id of ['next-episode-info', 'episode-heading', 'episode-title', 'playing-title']) element(id, shell);
   elements['next-episode'].hidden = !nextId;
-  const controls = ['back', 'center-play', 'timeline', 'toggle-play', 'rewind', 'forward', 'mute', 'next-episode', 'fullscreen', 'next-prompt'].map(id => elements[id]);
-  shell.querySelectorAll = selector => selector === '[data-player-overlay]' ? [header, center, overlay] : controls;
+  const controls = ['back', 'center-play', 'timeline', 'toggle-play', 'rewind', 'forward', 'mute', 'track-settings', 'next-episode', 'fullscreen', 'next-prompt', 'close-tracks'].map(id => elements[id]);
+  shell.querySelectorAll = selector => selector === '[data-player-overlay]' ? [header, center, overlay, trackPanel] : controls;
+  document.createElement = () => element('created-' + ++created);
   document.getElementById = id => elements[id] || null;
   document.querySelector = () => ({content: 'csrf-token'});
   document.querySelectorAll = () => [];
@@ -55,6 +66,14 @@ function screen(blockFirstPlay = false, options = {}) {
   }
   if (options.fullscreenDenied) { shell.requestFullscreen = () => { fullscreenRequests.push('denied'); throw Error('Denied'); }; }
   Object.assign(player, {paused: true, currentTime: 0, duration: 1000, controls: true, muted: false, playCalls: 0, readyState: options.cachedMetadata ? 1 : 0, loadCalls: 0});
+  function trackList(items) {
+    if (!items) return undefined;
+    const list = element('track-list-' + ++created);
+    list.length = items.length; items.forEach((track, index) => { list[index] = track; });
+    return list;
+  }
+  player.audioTracks = trackList(options.audioTracks);
+  player.textTracks = trackList(options.textTracks);
   player.setAttribute('data-id', '1'); player.setAttribute('data-watched', '0'); player.setAttribute('data-position', '120');
   player.play = () => {
     player.playCalls += 1;
@@ -64,7 +83,14 @@ function screen(blockFirstPlay = false, options = {}) {
   player.pause = () => { player.paused = true; player.emit('pause'); };
   const emit = player.emit.bind(player);
   player.emit = (name, event) => { if (name === 'loadedmetadata') player.readyState = 1; emit(name, event); };
-  player.load = () => { player.loadCalls += 1; player.readyState = 0; player.paused = true; player.ended = false; player.currentTime = 0; player.emit('loadedmetadata'); };
+  player.load = () => {
+    player.loadCalls += 1; player.readyState = 0; player.paused = true; player.ended = false; player.currentTime = 0;
+    player.emit('emptied');
+    if (options.nextTracks) {
+      player.audioTracks = trackList(options.nextTracks.audioTracks); player.textTracks = trackList(options.nextTracks.textTracks);
+    }
+    player.emit('loadedmetadata');
+  };
   const location = {href: '/watch/1', pathname: '/watch/1', search: ''};
   const window = {addEventListener: (name, fn) => document.addEventListener(name, fn),
     setTimeout(fn, delay) { timers.set(++timerId, {fn, at: now + delay}); return timerId; },
@@ -90,7 +116,7 @@ function screen(blockFirstPlay = false, options = {}) {
   vm.runInNewContext(fs.readFileSync('myflix/static/player.js', 'utf8'), context);
   return {elements, player, document, classes, requests, beacons, location, loads, fullscreenRequests,
     tick(ms) { now += ms; for (const [id, timer] of [...timers]) if (timer.at <= now) { timers.delete(id); timer.fn(); } },
-    key(keyCode) { let prevented = false; document.emit('keydown', {keyCode, preventDefault() { prevented = true; }}); return prevented; }
+    key(keyCode, shiftKey = false) { let prevented = false; document.emit('keydown', {keyCode, shiftKey, preventDefault() { prevented = true; }}); return prevented; }
   };
 }
 const ui = screen();
@@ -246,4 +272,97 @@ desktop.key(39);
 assert.equal(desktop.fullscreenRequests.length, 0, 'desktop playback does not enter fullscreen automatically');
 desktop.tick(3000); desktop.document.emit('mousemove');
 assert(desktop.classes.has('controls-visible'), 'desktop mouse interaction still reveals controls');
-console.log('Player behavior passed: seeking with cached metadata and remote OK, auto-hide, resume, fullscreen, up-next, autoplay and transition failures');
+
+assert(ui.elements['track-settings'].hidden, 'unsupported native track APIs do not expose a broken chooser');
+const singleAudio = screen(false, {cachedMetadata: true, audioTracks: [{language: 'en', enabled: true}], textTracks: []});
+assert(singleAudio.elements['track-settings'].hidden, 'a single audio track without subtitles offers no selection');
+const english = {label: 'English', language: 'en', enabled: true};
+const italian = {label: 'Italiano', language: 'it', enabled: false};
+const metadata = {kind: 'metadata', label: 'Metadata', mode: 'hidden'};
+const captions = {kind: 'captions', language: 'en', mode: 'disabled'};
+const subtitles = {kind: 'subtitles', label: 'Italiano', language: 'it', mode: 'showing'};
+const tracksUI = screen(false, {cachedMetadata: true, audioTracks: [english, italian], textTracks: [metadata, captions, subtitles]});
+assert.equal(subtitles.mode, 'disabled', 'cached native/default subtitles start off');
+assert.equal(metadata.mode, 'hidden', 'subtitle defaults do not affect metadata tracks');
+const trackElements = tracksUI.elements;
+const audioChoices = () => trackElements['audio-track-options'].children;
+const subtitleChoices = () => trackElements['subtitle-track-options'].children;
+assert(!trackElements['track-settings'].hidden, 'cached native tracks enable the chooser');
+trackElements.fullscreen.click(); trackElements.mute.focus(); tracksUI.key(39);
+assert.equal(tracksUI.document.activeElement, trackElements['track-settings'], 'remote Right reaches track settings');
+tracksUI.key(13);
+assert(!trackElements['track-panel'].hidden);
+assert.equal(tracksUI.document.activeElement, audioChoices()[0]);
+assert.equal(audioChoices()[0].textContent, 'English (en)');
+assert.equal(audioChoices()[0].getAttribute('aria-pressed'), 'true');
+tracksUI.key(40); tracksUI.key(13);
+assert.equal(english.enabled, false); assert.equal(italian.enabled, true);
+assert.equal(tracksUI.player.paused, false, 'selecting audio does not pause playback');
+assert.equal(tracksUI.player.currentTime, 120, 'selecting audio does not seek or reload');
+assert.equal(tracksUI.player.loadCalls, 0);
+assert.equal(tracksUI.document.activeElement, audioChoices()[1], 'selection retains focus after rebuilding choices');
+tracksUI.player.audioTracks.emit('change');
+assert.equal(tracksUI.document.activeElement, audioChoices()[1], 'native change events preserve focused choice');
+assert.equal(subtitleChoices().length, 3, 'only captions/subtitles appear, plus Off');
+assert.equal(subtitleChoices()[0].getAttribute('aria-pressed'), 'true', 'Off is selected initially');
+subtitleChoices()[1].focus(); tracksUI.key(32);
+assert.equal(captions.mode, 'showing'); assert.equal(subtitles.mode, 'disabled');
+tracksUI.player.emit('loadedmetadata');
+assert.equal(captions.mode, 'showing', 'late metadata does not undo a manual subtitle choice');
+assert.equal(metadata.mode, 'hidden', 'subtitle selection leaves metadata tracks alone');
+assert.equal(tracksUI.player.paused, false, 'Space selects a menu item rather than toggling playback');
+subtitleChoices()[0].click();
+assert.equal(captions.mode, 'disabled'); assert.equal(subtitles.mode, 'disabled');
+trackElements['close-tracks'].focus(); tracksUI.key(9);
+assert.equal(tracksUI.document.activeElement, audioChoices()[0], 'Tab remains within track dialog');
+tracksUI.key(9, true);
+assert.equal(tracksUI.document.activeElement, trackElements['close-tracks']);
+tracksUI.key(27);
+assert(trackElements['track-panel'].hidden, 'Back closes the chooser first');
+assert.equal(tracksUI.document.fullscreenElement, trackElements['player-shell'], 'closing track menu preserves fullscreen');
+assert.equal(tracksUI.document.activeElement, trackElements['track-settings']);
+trackElements['track-settings'].click(); subtitleChoices()[2].click(); tracksUI.tick(3000);
+assert(trackElements['track-panel'].hidden, 'idle playback closes track menu even with a focused choice');
+assert(!tracksUI.classes.has('controls-visible'));
+assert.equal(tracksUI.document.activeElement, tracksUI.player);
+assert.equal(subtitles.mode, 'showing', 'hiding controls does not disable selected subtitles');
+trackElements['track-settings'].click(); trackElements['close-tracks'].click();
+assert(trackElements['track-panel'].hidden, 'pointer Done closes chooser');
+
+const late = screen(false, {cachedMetadata: true, audioTracks: [{enabled: true}], textTracks: []});
+late.tick(3000);
+late.player.audioTracks[1] = {enabled: false}; late.player.audioTracks.length = 2; late.player.audioTracks.emit('addtrack');
+assert(!late.elements['track-settings'].hidden, 'tracks discovered after metadata enable the chooser');
+assert(!late.classes.has('controls-visible'), 'track discovery does not wake idle controls');
+late.elements['track-settings'].click(); late.player.audioTracks.length = 0; late.player.audioTracks.emit('removetrack');
+assert(late.elements['track-settings'].hidden); assert(late.elements['track-panel'].hidden);
+assert.equal(late.document.activeElement, late.player, 'removed tracks never leave focus in a hidden chooser');
+
+const lockedAudio = {label: 'Unsupported', get enabled() { return false; }, set enabled(value) { if (value) throw Error('Unsupported'); }};
+const unchangedAudio = {language: 'en', enabled: true};
+const locked = screen(false, {cachedMetadata: true, audioTracks: [unchangedAudio, lockedAudio]});
+locked.elements['track-settings'].click(); locked.elements['audio-track-options'].children[1].click();
+assert.equal(unchangedAudio.enabled, true, 'failed selection preserves previous audio');
+assert.match(locked.elements['track-message'].textContent, /could not switch/);
+
+const subtitleOnly = screen(false, {cachedMetadata: true, textTracks: [{kind: 'subtitles', language: 'it', mode: 'disabled'}],
+  nextTracks: {audioTracks: [{enabled: true}], textTracks: []}});
+subtitleOnly.elements['track-settings'].click();
+assert(subtitleOnly.elements['audio-track-group'].hidden);
+assert.equal(subtitleOnly.elements['subtitle-track-options'].children.length, 2);
+subtitleOnly.elements['next-episode'].click();
+assert(subtitleOnly.elements['track-panel'].hidden, 'episode transitions dismiss old track choices');
+assert(subtitleOnly.elements['track-settings'].hidden, 'track availability is recalculated for the next episode');
+const initiallyShowing = {kind: 'captions', language: 'en', mode: 'showing'};
+const nextShowing = {kind: 'subtitles', language: 'it', mode: 'showing'};
+const defaults = screen(false, {textTracks: [initiallyShowing], nextTracks: {textTracks: [nextShowing]}});
+defaults.player.emit('loadedmetadata');
+assert.equal(initiallyShowing.mode, 'disabled', 'subtitles start off when metadata is not cached');
+const lateSubtitle = {kind: 'subtitles', language: 'fr', mode: 'showing'};
+defaults.player.textTracks[1] = lateSubtitle; defaults.player.textTracks.length = 2; defaults.player.textTracks.emit('addtrack');
+assert.equal(lateSubtitle.mode, 'disabled', 'late-discovered subtitles also default off');
+defaults.elements['track-settings'].click(); defaults.elements['subtitle-track-options'].children[1].click();
+assert.equal(initiallyShowing.mode, 'showing', 'viewer can still enable subtitles');
+defaults.elements['next-episode'].click();
+assert.equal(nextShowing.mode, 'disabled', 'next episode resets subtitles to Off');
+console.log('Player behavior passed: playback, fullscreen, episode transitions, native audio/subtitle selection, remote and pointer controls, dynamic tracks, failures and idle hiding');

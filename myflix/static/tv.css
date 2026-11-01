@@ -14,6 +14,18 @@
 .player-wrap video { width: 100%; height: 100%; display: block; }
 .custom-player video:focus { outline: none; }
 .player-shell [hidden] { display: none !important; }
+.track-panel { position: absolute; right: 3%; bottom: 150px; z-index: 5; width: 640px; max-width: 94%; max-height: 65vh; overflow-y: auto; padding: 24px; border: 1px solid #777; border-radius: 8px; background: #151515f5; box-shadow: 0 8px 40px #0009; }
+.track-panel h2 { margin: 0 0 18px; font-size: 26px; }
+.track-panel h3 { margin: 0 0 12px; font-size: 20px; color: #bbb; }
+.track-columns { display: flex; }
+.track-columns > section { flex: 1; min-width: 0; padding-right: 14px; }
+.track-panel button { font-size: 18px; padding: 12px 16px; min-height: 48px; text-align: left; }
+.track-columns button { display: block; width: 100%; margin-bottom: 10px; background: #333; overflow-wrap: break-word; }
+.track-columns button[aria-pressed=true] { background: #eee; color: #111; }
+.track-panel button:focus { outline: 3px solid #fff; outline-offset: 3px; }
+#track-message { font-size: 17px; color: #f2c49b; }
+#track-message:empty { display: none; }
+@media(max-width:650px) { .track-panel { bottom: 125px; padding: 18px; } .track-columns { display: block; } .track-columns > section { padding: 0; margin-bottom: 18px; } }
 .watch-overlay, .watch-controls, .center-play { opacity: 0; visibility: hidden; pointer-events: none; transition: opacity .2s, visibility 0s .2s; }
 .custom-player.controls-visible .watch-overlay,
 .custom-player.controls-visible .watch-controls,

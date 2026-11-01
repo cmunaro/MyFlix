@@ -12,13 +12,21 @@
   var mute = document.getElementById('mute');
   var rewind = document.getElementById('rewind');
   var forward = document.getElementById('forward');
+  var trackButton = document.getElementById('track-settings');
+  var trackPanel = document.getElementById('track-panel');
+  var closeTrackButton = document.getElementById('close-tracks');
+  var audioOptions = document.getElementById('audio-track-options');
+  var subtitleOptions = document.getElementById('subtitle-track-options');
+  var trackMessage = document.getElementById('track-message');
+  var trackLists = [];
+  var subtitlesChosen = false;
   var nextLink = document.getElementById('next-episode');
   var nextPrompt = document.getElementById('next-prompt');
   var upNext = document.getElementById('up-next');
   var nextId = upNext.getAttribute('data-next-id');
   var overlays = Array.prototype.slice.call(shell.querySelectorAll('[data-player-overlay]'));
   var controls = Array.prototype.slice.call(shell.querySelectorAll('button,a,input')).filter(function (el) {
-    return overlays.some(function (overlay) { return overlay.contains(el); });
+    return !trackPanel.contains(el) && overlays.some(function (overlay) { return overlay.contains(el); });
   });
   var token = document.querySelector('meta[name="csrf-token"]').content;
   var mediaId = player.getAttribute('data-id');
@@ -30,6 +38,101 @@
   document.body.classList.add('custom-player');
 
   function label(button, text) { button.setAttribute('aria-label', text); button.title = text; }
+  function tracks(kind) {
+    var list = kind === 'audio' ? player.audioTracks : player.textTracks;
+    var result = [], i;
+    for (i = 0; list && i < list.length; i += 1) {
+      if (kind === 'audio' || list[i].kind === 'subtitles' || list[i].kind === 'captions') { result.push(list[i]); }
+    }
+    return result;
+  }
+  function trackControls() { return Array.prototype.slice.call(trackPanel.querySelectorAll('button')); }
+  function closeTracks(restoreFocus) {
+    var focused = trackPanel.contains(document.activeElement);
+    trackPanel.hidden = true;
+    trackButton.setAttribute('aria-expanded', 'false');
+    if (focused || restoreFocus) { (restoreFocus && !trackButton.hidden ? trackButton : player).focus(); }
+  }
+  function selectTrack(kind, selected) {
+    var available = tracks(kind), previous = [], property = kind === 'audio' ? 'enabled' : 'mode';
+    if (selected && available.indexOf(selected) === -1) { refreshTracks(); return; }
+    available.forEach(function (track) { previous.push(track[property]); });
+    try {
+      // Enable the chosen audio first so a failed switch cannot leave silence.
+      if (kind === 'audio') { selected.enabled = true; }
+      available.forEach(function (track) {
+        track[property] = kind === 'audio' ? track === selected : track === selected ? 'showing' : 'disabled';
+      });
+      if (available.some(function (track) {
+        return track[property] !== (kind === 'audio' ? track === selected : track === selected ? 'showing' : 'disabled');
+      })) { throw new Error('Track selection unavailable'); }
+      if (kind !== 'audio') { subtitlesChosen = true; }
+      trackMessage.textContent = '';
+    } catch (error) {
+      available.forEach(function (track, index) { try { track[property] = previous[index]; } catch (ignored) {} });
+      trackMessage.textContent = 'This browser could not switch the selected track.';
+    }
+    refreshTracks();
+    showControls();
+  }
+  function refreshTracks() {
+    var audio = tracks('audio'), subtitles = tracks('subtitles');
+    // Override native/default subtitle activation until the viewer chooses a
+    // subtitle setting for this video, including tracks discovered later.
+    if (!subtitlesChosen) {
+      subtitles.forEach(function (track) {
+        if (track.mode !== 'disabled') { try { track.mode = 'disabled'; } catch (ignored) {} }
+      });
+    }
+    var active = document.activeElement, focused = trackPanel.contains(active);
+    var restore = null;
+    trackButton.hidden = audio.length < 2 && !subtitles.length;
+    if (trackButton.hidden) {
+      closeTracks(false);
+      if (active === trackButton) { player.focus(); }
+      return;
+    }
+    if (trackPanel.hidden) { return; }
+    audioOptions.textContent = ''; subtitleOptions.textContent = '';
+    document.getElementById('audio-track-group').hidden = !audio.length;
+    document.getElementById('subtitle-track-group').hidden = !subtitles.length;
+    function option(container, kind, track, text, selected) {
+      var button = document.createElement('button');
+      button.type = 'button'; button.textContent = text;
+      button.setAttribute('aria-pressed', selected ? 'true' : 'false');
+      button.myflixTrack = track; button.myflixTrackKind = kind;
+      button.onclick = function () { selectTrack(kind, track); };
+      container.appendChild(button);
+      if (focused && active.myflixTrackKind === kind && active.myflixTrack === track) { restore = button; }
+    }
+    function name(track, index, prefix) {
+      var text = track.label || track.language || prefix + ' ' + (index + 1);
+      return track.label && track.language && track.label !== track.language ? text + ' (' + track.language + ')' : text;
+    }
+    audio.forEach(function (track, index) { option(audioOptions, 'audio', track, name(track, index, 'Audio'), Boolean(track.enabled)); });
+    if (subtitles.length) {
+      option(subtitleOptions, 'subtitles', null, 'Off', !subtitles.some(function (track) { return track.mode === 'showing'; }));
+      subtitles.forEach(function (track, index) { option(subtitleOptions, 'subtitles', track, name(track, index, 'Subtitles'), track.mode === 'showing'); });
+    }
+    if (focused && active !== closeTrackButton) { (restore || trackControls()[0] || closeTrackButton).focus(); }
+  }
+  function bindTrackEvents() {
+    trackLists.forEach(function (list) {
+      if (list.removeEventListener) { ['addtrack', 'removetrack', 'change'].forEach(function (event) { list.removeEventListener(event, refreshTracks); }); }
+    });
+    trackLists = [player.audioTracks, player.textTracks].filter(function (list) { return list && list.addEventListener; });
+    trackLists.forEach(function (list) { ['addtrack', 'removetrack', 'change'].forEach(function (event) { list.addEventListener(event, refreshTracks); }); });
+    refreshTracks();
+  }
+  trackButton.onclick = function () {
+    if (trackButton.hidden) { return; }
+    trackPanel.hidden = false;
+    trackButton.setAttribute('aria-expanded', 'true');
+    trackMessage.textContent = '';
+    refreshTracks(); showControls();
+    (trackControls()[0] || closeTrackButton).focus();
+  };
+  closeTrackButton.onclick = function () { closeTracks(true); showControls(); };
   function canSeek() { return player.readyState >= 1 && isFinite(player.duration) && player.duration > 0; }
   function clock(seconds) {
     seconds = Math.max(0, Math.floor(seconds));
@@ -69,6 +172,7 @@
   function hideControls(force) {
     if (!force && (player.paused || scrubbing)) { return; }
     window.clearTimeout(hideTimer);
+    closeTracks(false);
     // A focused button must not keep the overlay alive or receive hidden clicks.
     if (overlays.some(function (el) { return el.contains(document.activeElement); })) { player.focus(); }
     visible = false;
@@ -126,7 +230,8 @@
     render();
     play(); // A blocked autoplay leaves the central Play action available.
   }
-  player.addEventListener('loadedmetadata', initializeMedia);
+  player.addEventListener('loadedmetadata', function () { initializeMedia(); bindTrackEvents(); });
+  player.addEventListener('emptied', function () { subtitlesChosen = false; closeTracks(false); trackButton.hidden = true; });
   player.addEventListener('durationchange', function () { initializeMedia(); render(); });
   player.addEventListener('play', function () { document.body.classList.add('playing'); if (noticeKind !== 'save') { notify(''); } render(); showControls(); });
   player.addEventListener('pause', function () { document.body.classList.remove('playing'); render(); showControls(); save(); });
@@ -148,6 +253,7 @@
     if (event) { event.preventDefault(); }
     if (!nextId || switchingEpisode) { return; }
     switchingEpisode = true;
+    closeTracks(false);
     save();
     player.pause();
     render();
@@ -177,6 +283,7 @@
       initialized = false; autoAdvanceAttempted = false; switchingEpisode = false;
       lastSave = 0; pendingSave = null;
       notify('');
+      subtitlesChosen = false;
       player.src = data.stream_url;
       player.load();
       player.focus();
@@ -224,6 +331,16 @@
   document.addEventListener('keydown', function (event) {
     var code = event.keyCode, active = document.activeElement;
     var onControl = active && active !== player && shell.contains(active);
+    if (!trackPanel.hidden) {
+      var options = trackControls(), index = options.indexOf(active);
+      if (code === 27 || code === 461 || code === 10009 || code === 8) { closeTracks(true); }
+      else if (code === 13 || code === 32) { if (index !== -1) { active.click(); } }
+      else if (code === 9 || (code >= 37 && code <= 40)) {
+        var backwards = code === 37 || code === 38 || (code === 9 && event.shiftKey);
+        options[(index + (backwards ? -1 : 1) + options.length) % options.length].focus();
+      } else { options = null; }
+      if (options) { event.preventDefault(); showControls(); return; }
+    }
     if (code === 27 || code === 461 || code === 10009 || code === 8) {
       event.preventDefault();
       if (platform.fullscreenElement()) { platform.exitFullscreen(); }
@@ -260,6 +377,7 @@
     }
   });
   render();
+  bindTrackEvents();
   showControls();
   player.focus();
   // Metadata can already be cached before deferred JavaScript attaches listeners.

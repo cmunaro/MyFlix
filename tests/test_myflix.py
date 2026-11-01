@@ -246,6 +246,10 @@ class MyFlixTest(unittest.TestCase):
             film = db.execute("SELECT id FROM media WHERE series=''").fetchone()[0]
             db.execute("UPDATE media SET hidden=1 WHERE id=?", (hidden,))
         page = self.client.get(f"/watch/{first}").data
+        self.assertIn(b'id="track-settings"', page)
+        self.assertIn(b'aria-controls="track-panel"', page)
+        self.assertIn(b'id="track-panel"', page)
+        self.assertIn(b'aria-labelledby="track-heading" hidden', page)
         self.assertNotIn(b'id="watched"', page)
         self.assertNotIn(b'Mark watched', page)
         self.assertIn(f'data-next-id="{last}"'.encode(), page)
