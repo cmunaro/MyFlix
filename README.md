@@ -81,6 +81,8 @@ Single-episode download requests queue without repeating the all-season lookup; 
 
 Failed downloads appear with season, episode, and error details in Downloads. Following retains confirmed episode failures and provides a **Retry failed episode** action. **Retry all failed downloads** moves eligible failures out of Recent failures into a persistent priority queue. Retries start ahead of ordinary queued downloads, while running jobs finish normally. A retry that fails again returns with its new error. After each server restart, MyFlix automatically queues confirmed eligible failures once, after the first successful library scan. Failures from that recovery remain visible until you retry them or restart again. If a download request times out, check the queue before retrying. MyFlix does not automatically retry uncertain download submissions. Provider availability, accounts, and any required optional modules depend on the upstream provider.
 
+Acknowledged film and single-episode downloads interrupted by a reboot or service restart are recovered automatically after the engine is ready and the library has been scanned. MyFlix records which engine accepted each request and queues missing eligible work with priority, keeping the simultaneous job limit. Existing files, queued jobs, completed or cancelled requests, watched/excluded episodes, and paused or notification-only follows are skipped. Episode ranges and requests with uncertain outcomes still require queue review before retrying.
+
 ## Use your TV remote
 
 | Input | Action |

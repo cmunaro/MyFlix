@@ -41,14 +41,9 @@ def source_identity(path):
     return json.dumps([series, season, episode] if series else [title])
 
 
-def scan(database):
-    # Complete enumeration before any availability updates. An offline mount or
-    # unreadable subtree must not turn a whole library into missing media.
-    with connect(database) as db:
-        root_value = settings(db).get("videos_path", "")
-    if not root_value:
-        return 0
-    root = Path(root_value)
+def library_files(root, *, minimum_age=60):
+    """Enumerate confined media; recovery also checks newly published files."""
+    root = Path(root)
     if not root.is_dir():
         raise ValueError("Video folder is unavailable; catalog preserved")
     found = []
@@ -63,10 +58,21 @@ def scan(database):
             stat = path.stat()
             # Safety buffer only. Downloads must live outside the library until
             # completed; a stalled writer cannot be detected from mtime alone.
-            if not stat.st_size or time.time() - stat.st_mtime < 60:
+            if not stat.st_size or time.time() - stat.st_mtime < minimum_age:
                 continue
             relative = path.relative_to(root)
             found.append((str(relative), stat.st_size, identify(relative)))
+    return found
+
+
+def scan(database):
+    # Complete enumeration before any availability updates. An offline mount or
+    # unreadable subtree must not turn a whole library into missing media.
+    with connect(database) as db:
+        root_value = settings(db).get("videos_path", "")
+    if not root_value:
+        return 0
+    found = library_files(root_value)
     with connect(database) as db:
         # Folder changes and indexing serialize through SQLite's write lock.
         db.execute("BEGIN IMMEDIATE")

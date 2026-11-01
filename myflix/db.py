@@ -83,6 +83,14 @@ def initialize(path):
                 root TEXT NOT NULL, download_id TEXT NOT NULL, body TEXT NOT NULL,
                 PRIMARY KEY(root,download_id)
             );
+            CREATE TABLE IF NOT EXISTS download_request_state (
+                root TEXT NOT NULL, download_id TEXT NOT NULL,
+                engine_instance TEXT NOT NULL DEFAULT '',
+                submitted_at REAL NOT NULL DEFAULT 0,
+                state TEXT NOT NULL DEFAULT 'submitted',
+                PRIMARY KEY(root,download_id),
+                FOREIGN KEY(root,download_id) REFERENCES download_requests(root,download_id) ON DELETE CASCADE
+            );
             CREATE TABLE IF NOT EXISTS download_retries (
                 id INTEGER PRIMARY KEY, root TEXT NOT NULL, source_key TEXT NOT NULL,
                 source TEXT NOT NULL, body TEXT NOT NULL,
@@ -99,6 +107,17 @@ def initialize(path):
                                  ("submitted_at", "REAL NOT NULL DEFAULT 0")):
             if name not in columns:
                 db.execute(f"ALTER TABLE discoveries ADD COLUMN {name} {definition}")
+        # Retain the time of legacy acknowledged episode/retry submissions. A
+        # pre-boot timestamp can prove interruption even before instance tracking.
+        # Keep the original three-column request format usable by older releases
+        # so rolling back application code cannot break download submissions.
+        db.execute("""INSERT OR IGNORE INTO download_request_state(root,download_id,submitted_at)
+            SELECT download_requests.root,download_requests.download_id,COALESCE(
+            (SELECT MAX(d.submitted_at) FROM discoveries d JOIN subscriptions s ON s.id=d.subscription_id
+             WHERE s.root=download_requests.root AND d.download_id=download_requests.download_id AND d.submitted_at>0),
+            (SELECT MAX(r.submitted_at) FROM download_retries r
+             WHERE r.root=download_requests.root AND r.download_id=download_requests.download_id AND r.submitted_at>0),0)
+            FROM download_requests""")
         columns = {row["name"] for row in db.execute("PRAGMA table_info(subscriptions)")}
         for name, definition in (("lookup_state", "TEXT NOT NULL DEFAULT ''"),
                                  ("lookup_token", "TEXT NOT NULL DEFAULT ''"),

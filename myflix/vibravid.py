@@ -26,6 +26,7 @@ class VibraVid:
             raise ValueError("Invalid server-side VibraVid address")
         self.address = address.rstrip("/") + "/"
         self.secret = secret
+        self.instance_id = ""
 
     def call(self, action, body=None):
         if not self.secret:

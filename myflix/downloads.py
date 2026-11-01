@@ -19,6 +19,23 @@ def target_key(item):
     return item.get("site"), title, str(item.get("season") or 0), str(item.get("episode") or 0)
 
 
+def _submitted_requests(db, root):
+    return db.execute("""SELECT r.*,s.engine_instance,s.submitted_at,s.state
+        FROM download_requests r JOIN download_request_state s USING(root,download_id)
+        WHERE r.root=? AND s.state='submitted'""", (root,)).fetchall()
+
+
+def _movie_title_matches(title, payload):
+    name = payload["name"]
+    if title.casefold() == name.casefold():
+        return True
+    year = str(payload.get("year", ""))
+    if not re.fullmatch(r"\d{4}", year):
+        return False
+    # The pinned engine's movie format includes year and a quality suffix.
+    return bool(re.fullmatch(re.escape(f"{name} ({year})") + r"(?: \[[^\[\]]+\])?", title, re.IGNORECASE))
+
+
 class DownloadRetries:
     def __init__(self, database):
         self.database = database
@@ -27,6 +44,8 @@ class DownloadRetries:
         if root is None:
             with connect(self.database) as db:
                 root = settings(db)["videos_path"]
+        instance = getattr(engine, "instance_id", "")
+        submitted_at = time.time()
         result = engine.call("retry_download" if priority else "download", body)
         if result.get("queued") is not True:
             raise VibraVidError("Download was not acknowledged. Check the queue before retrying.")
@@ -34,7 +53,107 @@ class DownloadRetries:
             with connect(self.database) as db:
                 db.execute("INSERT OR REPLACE INTO download_requests VALUES(?,?,?)",
                            (root, result["download_id"], json.dumps(body)))
+                db.execute("""INSERT INTO download_request_state(root,download_id,engine_instance,submitted_at)
+                    VALUES(?,?,?,?)""", (root, result["download_id"], instance, submitted_at))
         return result
+
+    def recover_interrupted(self, engine, queue):
+        """Queue acknowledged work owned by a departed managed engine, once.
+
+        Return None while the library is unavailable. Unacknowledged mutations
+        and requests still owned by this engine always require queue review.
+        """
+        from .catalog import library_files
+        from .monitoring import queued_episode
+
+        if not all(isinstance(queue.get(key), list) and all(isinstance(job, dict) for job in queue[key])
+                   for key in ("active", "scheduled", "history")):
+            raise VibraVidError("Could not verify the queue before recovering interrupted downloads.")
+        instance = getattr(engine, "instance_id", "")
+        if not instance:
+            return 0
+        try:
+            boot_time = time.time() - time.clock_gettime(time.CLOCK_BOOTTIME)
+        except (AttributeError, OSError):
+            boot_time = 0
+        with connect(self.database) as db:
+            config = settings(db)
+            root = config["videos_path"]
+            if config.get("scan_error") or not config.get("last_scan") or not Path(root).is_dir():
+                return None
+        # Publication is atomic. Check even files younger than the catalog's
+        # scan buffer, so a reboot immediately after publication cannot resend.
+        files = [identity for _, _, identity in library_files(root, minimum_age=0)]
+        films = {title.casefold() for title, series, _, _ in files if not series}
+        episodes = {(series.casefold(), season, episode) for _, series, season, episode in files if series}
+        queued = 0
+        with connect(self.database) as db:
+            db.execute("BEGIN IMMEDIATE")
+            config = settings(db)
+            if config["videos_path"] != root or config.get("scan_error"):
+                return None
+            for request in _submitted_requests(db, root):
+                old_instance = request["engine_instance"]
+                if old_instance == instance or (not old_instance and not 0 < request["submitted_at"] < boot_time):
+                    continue
+                if not request["download_id"]:
+                    continue
+                body = json.loads(request["body"])
+                payload, site = body.get("payload"), body.get("site")
+                if not isinstance(payload, dict) or not isinstance(payload.get("name"), str) or not payload["name"] or not site:
+                    continue
+                name = payload["name"]
+                movie = bool(payload.get("is_movie"))
+                season = episode = None
+                if not movie:
+                    # An interrupted range may include completed episodes. Only
+                    # exact episodes have enough identity for a safe retry.
+                    if not str(body.get("season", "")).isdigit() or not str(body.get("episodes", "")).isdigit():
+                        continue
+                    season, episode = int(body["season"]), int(body["episodes"])
+                    if not 0 <= season <= 999 or not 1 <= episode <= 9999:
+                        continue
+                source = {"id": request["download_id"], "site": site, "title": name,
+                          "season": season, "episode": episode, "start_time": request["submitted_at"],
+                          "status": "interrupted", "error": "Download interrupted by engine restart."}
+                subscription = next((s for s in db.execute("SELECT * FROM subscriptions WHERE root=? AND site=?", (root, site))
+                                     if self.matches(source, s)), None) if not movie else None
+                discovery = db.execute("SELECT * FROM discoveries WHERE subscription_id=? AND season=? AND episode=?",
+                                       (subscription["id"], season, episode)).fetchone() if subscription else None
+                if discovery and (discovery["state"] not in ("new", "submitted") or not discovery["listed"]
+                                  or (discovery["download_id"] and discovery["download_id"] != request["download_id"])):
+                    continue
+                if subscription and subscription["mode"] != "auto":
+                    continue
+                if any(r["state"] != "submitted" for r in db.execute(
+                        "SELECT state FROM download_retries WHERE root=? AND download_id=?", (root, request["download_id"]))):
+                    continue
+                if any(j.get("id") == request["download_id"] and j.get("status") in ("completed", "cancelled", "failed")
+                       for j in queue["history"]):
+                    continue
+                if any(j.get("id") == request["download_id"] or j.get("parent_id") == request["download_id"]
+                       or queued_episode(j, site, name, season, episode) for j in queue["active"] + queue["scheduled"]):
+                    continue
+                status = self.status(db, root, body, subscription)
+                series_names = {name.casefold()}
+                if subscription:
+                    series_names.add(subscription["series"].casefold())
+                on_disk = any(_movie_title_matches(title, payload) for title in films) if movie else any(
+                    (series, season, episode) in episodes for series in series_names)
+                if on_disk or any(status.values()):
+                    db.execute("UPDATE download_request_state SET state=? WHERE root=? AND download_id=?",
+                               ("completed" if on_disk or status["available"] else "skipped", root, request["download_id"]))
+                    continue
+                inserted = db.execute("""INSERT OR IGNORE INTO download_retries(root,source_key,source,body)
+                    VALUES(?,?,?,?)""", (root, failure_key(source), json.dumps(source), json.dumps(body)))
+                queued += inserted.rowcount
+                db.execute("UPDATE download_request_state SET state='interrupted' WHERE root=? AND download_id=?", (root, request["download_id"]))
+                db.execute("UPDATE download_retries SET state='interrupted' WHERE root=? AND download_id=? AND state='submitted'",
+                           (root, request["download_id"]))
+                if discovery and inserted.rowcount:
+                    db.execute("""UPDATE discoveries SET state='retry_pending',error='' WHERE subscription_id=? AND season=? AND episode=?""",
+                               (subscription["id"], season, episode))
+        return queued
 
     def present(self, queue):
         """Remove retried attempts from failures, while retaining new retry failures."""
@@ -88,9 +207,10 @@ class DownloadRetries:
     def status(db, root, body, subscription):
         from .monitoring import episode_status
         if body["payload"].get("is_movie"):
-            rows = db.execute("""SELECT m.available,COALESCE(p.watched,0) watched FROM media m
+            rows = db.execute("""SELECT m.title,m.available,COALESCE(p.watched,0) watched FROM media m
                 LEFT JOIN progress p ON p.media_id=m.id WHERE m.root=? AND m.series=''
-                AND m.title=? COLLATE NOCASE""", (root, body["payload"]["name"])).fetchall()
+                """, (root,)).fetchall()
+            rows = [row for row in rows if _movie_title_matches(row["title"], body["payload"])]
             return {"available": any(row["available"] for row in rows),
                     "watched": any(row["watched"] for row in rows), "excluded": False}
         series = subscription["series"] if subscription else body["payload"]["name"]
@@ -219,6 +339,18 @@ class DownloadRetries:
     def reconcile(self, queue):
         with connect(self.database) as db:
             root = settings(db)["videos_path"]
+            for item in queue.get("history", []):
+                if item.get("status") in ("failed", "completed", "cancelled"):
+                    db.execute("UPDATE download_request_state SET state=? WHERE root=? AND download_id=? AND state='submitted'",
+                               (item["status"], root, item.get("id", "")))
+            for request in _submitted_requests(db, root):
+                body = json.loads(request["body"])
+                if not body["payload"].get("is_movie") and (not str(body.get("season", "")).isdigit()
+                        or not str(body.get("episodes", "")).isdigit()):
+                    continue
+                if self.status(db, root, body, None)["available"]:
+                    db.execute("UPDATE download_request_state SET state='completed' WHERE root=? AND download_id=?",
+                               (root, request["download_id"]))
             for row in db.execute("SELECT * FROM download_retries WHERE root=? AND state='submitted'", (root,)).fetchall():
                 source = json.loads(row["source"])
                 matches = [item for item in queue.get("history", []) if item.get("id") == row["download_id"]
@@ -245,6 +377,12 @@ class DownloadRetries:
         with connect(self.database) as db:
             db.execute("BEGIN IMMEDIATE")
             root = settings(db)["videos_path"]
+            # Persist cancellation intent before sending it to the engine. Even
+            # an uncertain cancellation must never resurrect work after reboot.
+            for row in _submitted_requests(db, root):
+                body = json.loads(row["body"])
+                if body.get("site") == site and body.get("payload", {}).get("name") == name:
+                    db.execute("UPDATE download_request_state SET state='cancelled' WHERE root=? AND download_id=?", (root, row["download_id"]))
             for row in db.execute("SELECT * FROM download_retries WHERE root=? AND state='pending'", (root,)).fetchall():
                 source = json.loads(row["source"])
                 if target_key(source)[:2] != (site, name):

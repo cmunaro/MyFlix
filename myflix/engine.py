@@ -9,6 +9,7 @@ import subprocess
 import sys
 import tempfile
 import tomllib
+import uuid
 from pathlib import Path
 
 from .engine_jobs import install_stages, install_tools, read_limits
@@ -104,7 +105,7 @@ class ManagedEngine:
             try:
                 self.process = subprocess.Popen(
                     [sys.executable, "-m", "myflix.engine", str(runtime), str(writer)],
-                    cwd=ROOT, env=env, pass_fds=(writer,), start_new_session=True)
+                    cwd=ROOT, env=env, pass_fds=(writer, self.lock.fileno()), start_new_session=True)
                 os.close(writer)
                 writer = None
                 if not select.select([reader], [], [], 120)[0]:
@@ -113,6 +114,9 @@ class ManagedEngine:
                 if not address or self.process.poll() is not None:
                     raise RuntimeError("Bundled download engine failed during startup; check the service logs")
                 self.app.extensions["vibravid"].address = address + "/"
+                # Only this lifecycle owner can prove that a previous engine
+                # has stopped: it holds the exclusive database-directory lock.
+                self.app.extensions["vibravid"].instance_id = uuid.uuid4().hex
             finally:
                 os.close(reader)
                 if writer is not None:

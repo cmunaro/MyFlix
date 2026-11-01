@@ -16,6 +16,7 @@ from myflix.vibravid import VibraVidError
 
 class Provider:
     def __init__(self):
+        self.instance_id = "engine-1"
         self.episodes = [{"season": 1, "episode": 1, "title": "First"}]
         self.calls = []
         self.queue = {"active": [], "scheduled": [], "history": []}
@@ -536,6 +537,219 @@ class MonitoringTest(unittest.TestCase):
             restarted.run(stop)
         self.assertFalse(any(a == "retry_download" for a, _ in self.provider.calls))
         self.assertEqual([r["state"] for r in self.discoveries()], ["uncertain", "submitted", "submitting"])
+
+    def run_restarted_monitor(self):
+        restarted = SeriesMonitor(self.database, self.provider)
+        stop = threading.Event()
+        tick = restarted.tick
+        def first_tick():
+            tick()
+            stop.set()
+        with patch.object(restarted, "tick", side_effect=first_tick):
+            restarted.run(stop)
+        return restarted
+
+    def test_reboot_recovers_acknowledged_missing_episodes_once_with_priority(self):
+        self.provider.episodes = [{"season": 1, "episode": n} for n in (10, 11, 12)]
+        self.follow(automatic=True)
+        original_ids = [r["download_id"] for r in self.discoveries()]
+        self.provider.instance_id = "engine-after-reboot"
+        restarted = self.run_restarted_monitor()
+        self.assertEqual([b["episodes"] for a, b in self.provider.calls if a == "retry_download"], ["10", "11", "12"])
+        self.assertEqual([r["state"] for r in self.discoveries()], ["submitted"] * 3)
+        self.assertFalse(set(original_ids) & {r["download_id"] for r in self.discoveries()})
+        self.assertEqual(restarted.recover_startup()["interrupted"], 0)
+        restarted.tick()
+        self.assertEqual(len([a for a, _ in self.provider.calls if a == "retry_download"]), 3)
+        with connect(self.database) as db:
+            self.assertEqual(db.execute("SELECT count(*) FROM download_retries").fetchone()[0], 3)
+            self.assertEqual(db.execute("SELECT count(*) FROM download_request_state WHERE engine_instance='engine-after-reboot'").fetchone()[0], 3)
+
+    def test_reboot_recovery_serializes_queue_read_and_reservation_with_manual_submissions(self):
+        self.follow(automatic=True)
+        self.provider.instance_id = "engine-after-reboot"
+        reading, release, manual_entered = threading.Event(), threading.Event(), threading.Event()
+        original = self.provider.call
+        results = []
+        def call(action, body=None):
+            if action == "queue":
+                reading.set()
+                release.wait(3)
+            return original(action, body)
+        def recover():
+            results.append(self.monitor.recover_startup())
+        def manual():
+            with self.monitor.download_lock:
+                manual_entered.set()
+        with patch.object(self.provider, "call", side_effect=call):
+            recovery = threading.Thread(target=recover)
+            submission = threading.Thread(target=manual)
+            recovery.start()
+            try:
+                self.assertTrue(reading.wait(1))
+                submission.start()
+                self.assertFalse(manual_entered.wait(.1))
+            finally:
+                release.set()
+                recovery.join(3)
+                if submission.ident is not None:
+                    submission.join(3)
+        self.assertEqual(results[0]["interrupted"], 1)
+        self.assertTrue(manual_entered.is_set())
+
+    def test_reboot_does_not_resend_uncertain_or_unacknowledged_mutations(self):
+        self.failed_downloads(3)
+        self.provider.queue["history"] = []
+        self.provider.instance_id = "engine-after-reboot"
+        with connect(self.database) as db:
+            db.execute("UPDATE discoveries SET state='uncertain' WHERE episode=1")
+            db.execute("UPDATE discoveries SET state='submitting' WHERE episode=2")
+            db.execute("DELETE FROM download_requests WHERE download_id=?", (self.discoveries()[2]["download_id"],))
+        self.run_restarted_monitor()
+        self.assertFalse(any(a == "retry_download" for a, _ in self.provider.calls))
+        self.assertEqual([r["state"] for r in self.discoveries()], ["uncertain", "submitting", "submitted"])
+
+    def test_reboot_recovery_checks_live_queue_and_library_readiness(self):
+        self.follow(automatic=True)
+        request = self.discoveries()[0]
+        self.assertEqual(self.monitor.recover_startup()["interrupted"], 0, "the same engine must never be retried")
+        self.provider.instance_id = "engine-after-reboot"
+        for group, job in (("active", {"site": "example", "title": "Show", "season": 1, "episode": 1}),
+                           ("scheduled", {"site": "example", "title": "Show - S1 E1-3"})):
+            with self.subTest(group=group):
+                self.provider.queue[group] = [job]
+                self.assertEqual(self.monitor.recover_startup()["interrupted"], 0)
+                self.provider.queue[group] = []
+        for mode in ("paused", "notify"):
+            with connect(self.database) as db:
+                db.execute("UPDATE subscriptions SET mode=?", (mode,))
+            self.assertEqual(self.monitor.recover_startup()["interrupted"], 0)
+        with connect(self.database) as db:
+            db.execute("UPDATE subscriptions SET mode='auto'")
+            db.execute("INSERT INTO settings VALUES('scan_error','Drive unavailable')")
+        self.assertIsNone(self.monitor.recover_startup()["interrupted"])
+        with connect(self.database) as db:
+            db.execute("DELETE FROM settings WHERE key='scan_error'")
+        self.library.rename(self.base / "offline")
+        self.assertIsNone(self.monitor.recover_startup()["interrupted"])
+        (self.base / "offline").rename(self.library)
+        original = self.provider.queue
+        self.provider.queue = {"active": [], "history": []}
+        with self.assertRaises(VibraVidError):
+            self.monitor.recover_startup()
+        self.provider.queue = original
+        other = self.base / "other-library"
+        other.mkdir()
+        with connect(self.database) as db:
+            db.execute("UPDATE settings SET value=? WHERE key='videos_path'", (str(other),))
+        self.assertEqual(self.monitor.recover_startup()["interrupted"], 0)
+        with connect(self.database) as db:
+            db.execute("UPDATE settings SET value=? WHERE key='videos_path'", (str(self.library),))
+        self.assertEqual(self.monitor.recover_startup()["interrupted"], 1)
+        self.assertEqual(self.discoveries()[0]["state"], "retry_pending")
+
+    def test_reboot_recovery_preserves_newly_published_file_even_before_scan_buffer(self):
+        self.follow(automatic=True)
+        self.provider.instance_id = "engine-after-reboot"
+        path = self.video("Show.S01E01.mp4")
+        os.utime(path, None)
+        scan(self.database)  # Too fresh for the normal catalog buffer.
+        self.assertEqual(self.discoveries()[0]["state"], "submitted")
+        self.assertEqual(self.monitor.recover_startup()["interrupted"], 0)
+        path.unlink()  # A later deliberate removal must not resurrect the old request.
+        self.assertEqual(self.monitor.recover_startup()["interrupted"], 0)
+        self.assertEqual(path.exists(), False)
+
+    def test_reboot_recovery_skips_watched_excluded_and_unlisted_episodes(self):
+        self.follow(automatic=True)
+        self.provider.instance_id = "engine-after-reboot"
+        with connect(self.database) as db:
+            db.execute("UPDATE discoveries SET listed=0")
+        self.assertEqual(self.monitor.recover_startup()["interrupted"], 0)
+        with connect(self.database) as db:
+            db.execute("UPDATE discoveries SET listed=1")
+        for watched, excluded in ((1, 0), (0, 1)):
+            with self.subTest(watched=watched, excluded=excluded):
+                with connect(self.database) as db:
+                    db.execute("UPDATE download_request_state SET state='submitted'")
+                    db.execute("INSERT OR REPLACE INTO season_state VALUES(?,'Show',1,?,?)", (str(self.library), watched, excluded))
+                self.assertEqual(self.monitor.recover_startup()["interrupted"], 0)
+        self.assertFalse(any(a == "retry_download" for a, _ in self.provider.calls))
+
+    def test_reboot_recovery_retains_terminal_outcomes_and_cancellation_intent(self):
+        self.failed_downloads(3)
+        sent = self.discoveries()
+        for row, status in zip(self.provider.queue["history"], ("completed", "cancelled", "failed")):
+            row["status"] = status
+        self.monitor.reconcile_queue(self.provider.queue)
+        self.provider.queue["history"] = []
+        self.provider.instance_id = "engine-after-reboot"
+        self.assertEqual(self.monitor.recover_startup()["interrupted"], 0)
+        # A confirmed failure uses the existing failure retry path, not recovery
+        # inferred from absence. Completed/cancelled jobs are never requeued.
+        with connect(self.database) as db:
+            self.assertEqual(db.execute("SELECT state FROM download_request_state WHERE download_id=?", (sent[0]["download_id"],)).fetchone()[0], "completed")
+            self.assertEqual(db.execute("SELECT state FROM download_request_state WHERE download_id=?", (sent[1]["download_id"],)).fetchone()[0], "cancelled")
+        self.provider.episodes.append({"season": 1, "episode": 4})
+        self.check_now()
+        fourth = self.discoveries()[3]
+        queue = {"active": [{"id": fourth["download_id"], "site": "example", "title": "Show", "season": 1, "episode": 4}], "scheduled": []}
+        self.monitor.retries.cancel_pending(queue, fourth["download_id"])
+        self.provider.instance_id = "engine-next-reboot"
+        self.assertEqual(self.monitor.recover_startup()["interrupted"], 0)
+
+    def test_retry_interrupted_by_another_reboot_recovers_but_uncertain_retry_does_not(self):
+        self.follow(automatic=True)
+        self.provider.instance_id = "engine-after-reboot"
+        self.run_restarted_monitor()
+        self.provider.instance_id = "engine-next-reboot"
+        self.run_restarted_monitor()
+        self.assertEqual(len([a for a, _ in self.provider.calls if a == "retry_download"]), 2)
+        self.provider.instance_id = "engine-third-reboot"
+        self.provider.fail = "retry_download"
+        self.run_restarted_monitor()
+        self.assertEqual(self.discoveries()[0]["state"], "uncertain")
+        self.provider.instance_id = "engine-fourth-reboot"
+        self.provider.fail = None
+        self.run_restarted_monitor()
+        self.assertEqual(len([a for a, _ in self.provider.calls if a == "retry_download"]), 3)
+
+    def test_reboot_recovery_migrates_legacy_acknowledgements_without_guessing_unknown_sends(self):
+        self.follow(automatic=True)
+        with connect(self.database) as db:
+            db.execute("UPDATE discoveries SET submitted_at=1")
+            db.execute("DROP TABLE download_request_state")
+        initialize(self.database)
+        initialize(self.database)
+        with connect(self.database) as db:
+            self.assertEqual([r["name"] for r in db.execute("PRAGMA table_info(download_requests)")], ["root", "download_id", "body"])
+            # The old release's insertion format must remain usable on rollback.
+            db.execute("INSERT INTO download_requests VALUES(?,'legacy-unknown',?)", (str(self.library), '{"site":"example","payload":{"name":"Unknown"}}'))
+        initialize(self.database)
+        self.assertEqual(self.monitor.recover_startup()["interrupted"], 1)
+        self.assertEqual(self.monitor.recover_startup()["interrupted"], 0)
+
+    def test_reboot_recovers_saved_film_request_but_requires_review_for_episode_ranges(self):
+        film = {"site": "example", "payload": {"name": "Film", "is_movie": True}}
+        season = {"site": "example", "payload": self.payload, "season": "1", "episodes": "1-3"}
+        self.monitor.retries.submit(self.provider, film)
+        self.monitor.retries.submit(self.provider, season)
+        self.provider.instance_id = "engine-after-reboot"
+        self.run_restarted_monitor()
+        self.assertEqual([b for a, b in self.provider.calls if a == "retry_download"], [film])
+
+    def test_reboot_recovery_matches_pinned_movie_year_and_quality_format(self):
+        film = {"site": "example", "payload": {"name": "Film", "year": 2024, "is_movie": True}}
+        self.monitor.retries.submit(self.provider, film)
+        self.video("Film (2024) [1080p].mkv")
+        scan(self.database)
+        self.provider.instance_id = "engine-after-reboot"
+        self.assertEqual(self.monitor.recover_startup()["interrupted"], 0)
+        newer = copy.deepcopy(film)
+        newer["payload"]["year"] = 2025
+        self.monitor.retries.submit(self.provider, newer)
+        self.provider.instance_id = "engine-next-reboot"
+        self.assertEqual(self.monitor.recover_startup()["interrupted"], 1, "a different year's film is not the same download")
 
     def test_startup_waits_for_initial_scan_and_failed_mount_blocks_submission(self):
         self.failed_downloads(1)

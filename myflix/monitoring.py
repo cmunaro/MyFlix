@@ -121,7 +121,7 @@ class SeriesMonitor:
         self.database = database
         self.engine = engine
         self.lock = threading.Lock()
-        self.download_lock = threading.Lock()
+        self.download_lock = threading.RLock()
         self.retries = DownloadRetries(database)
 
     def check(self, subscription):
@@ -190,6 +190,15 @@ class SeriesMonitor:
         self.reconcile_queue(queue)
         with self.download_lock:
             return self.retries.enqueue(queue)
+
+    def recover_startup(self):
+        with self.download_lock:
+            # Keep manual submissions out of the gap between the queue snapshot
+            # and the durable recovery reservation. Reconciliation shares this lock.
+            queue = self.engine.call("queue")
+            self.reconcile_queue(queue)
+            interrupted = self.retries.recover_interrupted(self.engine, queue)
+            return {**self.retries.enqueue(queue), "interrupted": interrupted}
 
     def reconcile_queue(self, queue):
         """Persist confirmed episode failures without retrying uncertain requests."""
@@ -307,8 +316,9 @@ class SeriesMonitor:
             with connect(self.database) as db:
                 pending = db.execute("""SELECT 1 FROM discoveries d JOIN subscriptions s ON s.id=d.subscription_id
                     WHERE s.root=? AND d.state IN ('submitted','submitting','uncertain')
-                    UNION ALL SELECT 1 FROM download_retries WHERE root=? AND state='submitted' LIMIT 1""",
-                    (settings(db)["videos_path"], settings(db)["videos_path"])).fetchone()
+                    UNION ALL SELECT 1 FROM download_retries WHERE root=? AND state='submitted'
+                    UNION ALL SELECT 1 FROM download_request_state WHERE root=? AND state='submitted' LIMIT 1""",
+                    (settings(db)["videos_path"], settings(db)["videos_path"], settings(db)["videos_path"])).fetchone()
             if pending:
                 try:
                     self.reconcile_queue(self.engine.call("queue"))
@@ -362,10 +372,10 @@ class SeriesMonitor:
                 continue
             try:
                 if startup_recovery:
-                    result = self.retry_failed()
-                    startup_recovery = False
-                    logging.info("Startup download recovery: %s priority retries queued; %s skipped",
-                                 result["queued"], result["skipped"])
+                    result = self.recover_startup()
+                    startup_recovery = result["interrupted"] is None
+                    logging.info("Startup download recovery: %s failed and %s interrupted jobs queued; %s skipped",
+                                 result["queued"], result["interrupted"], result["skipped"])
                 self.tick()
             except Exception:
                 logging.exception("Series monitoring failed")

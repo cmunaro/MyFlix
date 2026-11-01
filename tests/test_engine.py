@@ -1,4 +1,6 @@
 import os
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -65,6 +67,7 @@ class ManagedEngineTest(unittest.TestCase):
                 engine.start()
             process = engine.process
             client = self.app.extensions["vibravid"]
+            self.assertEqual(len(client.instance_id), 32)
             self.assertNotIn(":0/", client.address)
             self.assertTrue(client.call("sites")["groups"])
             self.assertEqual(client.call("status")["slots"]["max"], 4)
@@ -76,10 +79,38 @@ class ManagedEngineTest(unittest.TestCase):
             duplicate = ManagedEngine(self.app)
             with self.assertRaisesRegex(RuntimeError, "Another MyFlix instance"):
                 duplicate.start()
+            # Simulate the parent losing its descriptor while the engine lives.
+            # Recovery must never run beside an orphaned previous engine.
+            engine.lock.close()
+            engine.lock = None
+            with self.assertRaisesRegex(RuntimeError, "Another MyFlix instance"):
+                ManagedEngine(self.app).start()
         finally:
             engine.close()
         self.assertIsNotNone(process.poll())
         engine.close()  # Repeated teardown is harmless.
+
+    def test_engine_process_retains_instance_lock_and_each_start_gets_new_identity(self):
+        spawn = subprocess.Popen
+        worker = "import os,sys,time; os.write(int(sys.argv[1]), b'http://127.0.0.1:12345'); os.close(int(sys.argv[1])); time.sleep(60)"
+        def lightweight_engine(command, **kwargs):
+            return spawn([sys.executable, "-c", worker, command[-1]], **kwargs)
+        identities = []
+        with patch("myflix.engine.prepare", return_value=(self.data, self.data)), \
+                patch("myflix.engine.subprocess.Popen", side_effect=lightweight_engine):
+            for _ in range(2):
+                engine = ManagedEngine(self.app)
+                try:
+                    engine.start()
+                    identities.append(self.app.extensions["vibravid"].instance_id)
+                    engine.lock.close()
+                    engine.lock = None
+                    with self.assertRaisesRegex(RuntimeError, "Another MyFlix instance"):
+                        ManagedEngine(self.app).start()
+                finally:
+                    engine.close()
+        self.assertEqual(len(set(identities)), 2)
+        self.assertTrue(all(len(identity) == 32 for identity in identities))
 
 
 if __name__ == "__main__":
