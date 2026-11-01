@@ -87,36 +87,33 @@ The [pinned upstream API](https://github.com/AstraeLabs/VibraVid/blob/3a5045587a
 
 ## Raspberry Pi service
 
-Use Raspberry Pi OS **64-bit** with systemd and mise installed. The following layout keeps the mise Python interpreter under `/opt` so systemd's home-directory protection does not block it. Copy this project to `/opt/myflix`, owned by your installation user; exclude `.venv`, local `data`, `.vibravid`, and `.mise-data` from any existing checkout.
+For an always-on installation, use the scripts below instead of the development setup at the start of this guide.
 
-From `/opt/myflix`, as your installation user:
-
-```sh
-export MISE_DATA_DIR=/opt/myflix/.mise-data
-mise trust
-mise install
-mise run setup
-```
-
-Then provision the service account, media permissions, and configuration:
+Use Raspberry Pi OS **64-bit** with systemd. Install Git if necessary (`sudo apt-get install git`), clone this repository anywhere as your normal user, and run:
 
 ```sh
-sudo groupadd --system --force media
-sudo useradd --system --gid media --home-dir /var/lib/myflix --no-create-home --shell /usr/sbin/nologin myflix
-sudo install -d -o myflix -g media -m 2750 /srv/media/library
-sudo install -m 0600 deploy/myflix.env.example /etc/myflix.env
-sudoedit /etc/myflix.env
-sudo install -m 0644 deploy/myflix.service /etc/systemd/system/myflix.service
-sudo systemctl daemon-reload
-sudo systemctl enable --now myflix
-sudo systemctl status myflix
+./install.sh
 ```
 
-Adjust the bind address and port in `/etc/myflix.env` if needed. The bundled engine runs as the same `myflix` account; no second service or user is needed. Ensure `/opt/myflix` and the mise interpreter are readable/traversable by the `myflix` user. Keep code owned by the installation user, not the service user.
+The script elevates with sudo, installs Debian OS prerequisites, and bootstraps a private [mise installation](https://mise.jdx.dev/installing-mise.html) under `/opt/myflix/.mise`. Pinned Python and uv live in `/opt/myflix/.mise-data`, outside the service's home-directory sandbox. It deploys committed files into a new `/opt/myflix/releases/` folder, runs the existing setup task to fetch the pinned engine and sync the frozen lock, and switches `/opt/myflix/current` only after setup succeeds. The checkout must be clean. The service never runs from your clone, so it can be under your home directory. No global tool versions or Git settings are changed.
 
-The service starts the locked `.venv` directly; mise is used during installation, not on every boot. Waitress uses four threads. All state, internal engine configuration, staging downloads, and SQLite databases live under `/var/lib/myflix`. The service can write there and publish completed downloads to `/srv/media/library`. It restarts on failure. Open the admin page to configure `/srv/media/library` after startup.
+The installer creates the `myflix` service account and `media` group. It creates `/srv/media/library` if missing, without changing an existing folder's ownership or permissions. `/etc/myflix.env` is created only once; edit it to adjust `MYFLIX_HOST` and `MYFLIX_PORT`, then restart MyFlix. The systemd unit is refreshed during deployment; keep customizations in `sudo systemctl edit myflix` drop-ins so updates preserve them.
 
-For a different mount/folder, adjust `RequiresMountsFor` and `ReadWritePaths` in the unit **as well as** the admin setting. Media under `/home` is blocked by `ProtectHome`; use `/srv` or `/mnt`. `RequiresMountsFor` must reference the real external mount so the service waits for it. An unavailable folder or unreadable subtree preserves the last successful catalog and reports a scan error; an accessible empty folder is treated as an empty library.
+The service starts `/opt/myflix/current/.venv/bin/python` directly and is enabled at boot. All state, internal engine configuration, staging downloads, and SQLite databases live under `/var/lib/myflix`. The service can write there and publish completed downloads to `/srv/media/library`. Open admin Settings and choose `/srv/media/library` after installation. Until then, the default library is `/var/lib/myflix/library`.
+
+For a different mount/folder, override `RequiresMountsFor` and `ReadWritePaths` in the unit **as well as** the admin setting. Give `myflix` read/write access to that folder and restart the service. Media under `/home` is blocked by `ProtectHome`; use `/srv` or `/mnt`. `RequiresMountsFor` must reference the real external mount so the service waits for it. An unavailable folder or unreadable subtree preserves the last successful catalog and reports a scan error; an accessible empty folder is treated as an empty library.
+
+To update, from your original clone:
+
+```sh
+./update.sh
+```
+
+The script refuses a dirty checkout and uses `git pull --ff-only` with the configured upstream. It then runs the installer from the updated checkout. Preparation happens while the old release runs; the service stops before the active release changes, then starts and gets an HTTP health check using your configured host/port. Concurrent deployments are locked out. Playback and running downloads are interrupted by the restart. A failed preparation leaves the active release running. A failed startup restores the previous release symlink and attempts to start it; check the journal if recovery fails. This restores code, not database schemas: back up data before an upgrade.
+
+Old and failed releases are kept for diagnosis and can consume substantial space. After a successful update, remove unused release directories manually, retaining the target of `/opt/myflix/current` and the previous working release. Do not move releases or their virtual environments. `./install.sh` can be rerun to deploy the checkout's current commit without pulling.
+
+These scripts refuse the older layout with application code directly in `/opt/myflix`. To migrate, stop the old service, preserve `/etc/myflix.env` and `/var/lib/myflix`, move the old application directory aside, and run `install.sh` from a separate clean clone. Keep the old directory until the new deployment works. Custom media mount overrides should be moved to a systemd drop-in. Physical Raspberry Pi installation and engine helper availability still need target validation.
 
 ```sh
 sudo journalctl -u myflix -f
@@ -142,8 +139,10 @@ mise run test
 mise run test-tv
 ```
 
-Run setup first. Tests include starting the actual bundled engine with an automatically generated secret, querying providers/status/queue, verifying duplicate-instance protection and shutdown, preserving configuration, and publishing to the latest UI-selected folder. Other tests cover import, inferred episode ordering, HTTP ranges, progress/resume, watched transitions, rescans, missing media, folder changes, series/artwork access, password-free admin access, CSRF, input validation, symlink confinement, atomic hook publication, and HTTP integration for provider search, seasons, downloads, queue/status, and cancellation.
+Deployment orchestration can be checked without root or a systemd host using `mise exec -- python -m unittest discover -s tests -p test_deployment.py -v`. These tests mock OS commands and cover release switching, preparation failures, startup rollback, preserved configuration, and update guards.
+
+Run setup first for the full suite. Tests include starting the actual bundled engine with an automatically generated secret, querying providers/status/queue, verifying duplicate-instance protection and shutdown, preserving configuration, and publishing to the latest UI-selected folder. Other tests cover import, inferred episode ordering, HTTP ranges, progress/resume, watched transitions, rescans, missing media, folder changes, series/artwork access, password-free admin access, CSRF, input validation, symlink confinement, atomic hook publication, and HTTP integration for provider search, seasons, downloads, queue/status, and cancellation.
 
 The optional `test-tv` task pins Node only for the development test; the service requires no Node runtime. It exercises admin input navigation, queue focus restoration, download mutation guards, remote shelf navigation, off-screen selection, shorter shelves, restored browsing focus, player auto-hide with focused buttons, hidden-control tab order, remote media keys, pointer/remote seek buttons, cached metadata, fullscreen, resume saves, next-episode prompts, manual/automatic episode transitions, failed transitions, final episodes, blocked autoplay, native audio/subtitle selection, subtitle Off, dynamic track changes, failed switches, track-menu focus and idle hiding with small DOM fixtures. It does not replace visual/browser or physical TV testing.
 
-Back up media separately. For a consistent SQLite backup, stop MyFlix and copy the entire data directory (including any `-wal` and `-shm` files), then restart. Restore it only while stopped. The data directory contains provider login files and internal secrets as well as catalog/settings/history; keep backups private. Before upgrading, back it up, stop the service, update code and mise pins, run `mise install` and `mise run setup` with the same `MISE_DATA_DIR`, then start the service. This initial schema is version 1; future incompatible changes require an explicit migration.
+Back up media separately. For a consistent SQLite backup, stop MyFlix and copy the entire data directory (including any `-wal` and `-shm` files), then restart. Restore it only while stopped. The data directory contains provider login files and internal secrets as well as catalog/settings/history; keep backups private. Before upgrading, back it up, restart the service after the backup, then run `./update.sh` from your clone; deployment handles tool pins, setup, and the service restart. This initial schema is version 1; future incompatible changes require an explicit migration.

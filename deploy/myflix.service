@@ -7,11 +7,11 @@ RequiresMountsFor=/srv/media/library
 Type=simple
 User=myflix
 Group=media
-WorkingDirectory=/opt/myflix
+WorkingDirectory=/opt/myflix/current
 EnvironmentFile=/etc/myflix.env
 Environment=MYFLIX_DATA=/var/lib/myflix
 Environment=PYTHONDONTWRITEBYTECODE=1
-ExecStart=/opt/myflix/.venv/bin/python -m myflix
+ExecStart=/opt/myflix/current/.venv/bin/python -m myflix
 Restart=on-failure
 RestartSec=5
 StateDirectory=myflix

@@ -28,7 +28,9 @@ The admin interface works with a desktop pointer or TV remote. Use **Downloads**
 
 ## Get started
 
-You need [mise](https://mise.jdx.dev/), Git, and network access for setup. Mise installs the pinned Python and uv versions; no global Python changes are needed. For a Raspberry Pi deployment, use **64-bit Raspberry Pi OS**.
+For an always-on Raspberry Pi installation, use **64-bit Raspberry Pi OS** and follow [Run on Raspberry Pi](#run-on-raspberry-pi); `install.sh` installs the required tools for you.
+
+For local development, you need [mise](https://mise.jdx.dev/), Git, and network access. Mise installs the pinned Python and uv versions; no global Python changes are needed.
 
 ```sh
 git clone https://github.com/cmunaro/MyFlix.git
@@ -108,17 +110,36 @@ VIDAA firmware controls its own browser bars, pointer, and fullscreen behavior. 
 
 ## Run on Raspberry Pi
 
-For an always-on installation, use the supplied [systemd unit](deploy/myflix.service) and [environment example](deploy/myflix.env.example). The expected layout is:
+On **64-bit Raspberry Pi OS**, clone the repository anywhere as your normal user, then run:
+
+```sh
+git clone https://github.com/cmunaro/MyFlix.git
+cd MyFlix
+./install.sh
+```
+
+The [install script](install.sh) uses sudo, installs OS prerequisites and a private mise installation, installs the pinned Python/uv and bundled engine, creates the service account, and enables and starts MyFlix at boot. You only need Git and sudo to begin. Setup needs network access. The checkout must be clean; only committed files are deployed.
 
 | Location | Purpose |
 | --- | --- |
-| `/opt/myflix` | Application, virtual environment, and pinned tools |
+| `/opt/myflix/current` | Active release (symlink); independent of your clone |
+| `/opt/myflix/releases/` | Prepared and previous releases |
+| `/opt/myflix/.mise-data` | Pinned tools shared between releases |
+| `/etc/myflix.env` | Listening address and port; preserved on reinstall/update |
 | `/var/lib/myflix` | Databases, settings, artwork cache, and engine staging |
 | `/srv/media/library` | Completed videos |
 
-Follow the [Raspberry Pi service installation](docs/guide.md#raspberry-pi-service) for commands to install the pinned tools under `/opt`, create the service account, and grant media access. This keeps the interpreter accessible with the unit's home-directory protection enabled.
+After installation, select `/srv/media/library` in admin. For another mount, use `sudo systemctl edit myflix` to override `RequiresMountsFor` and `ReadWritePaths`, then restart and change the admin library setting. The service user needs read/write access; media under `/home` is blocked by `ProtectHome`. Existing media folders and their permissions are preserved.
 
-After starting the service, select `/srv/media/library` in admin. For another mount, update `RequiresMountsFor` and `ReadWritePaths` in the unit as well as the library setting. The service user needs read/write access; media under `/home` is blocked by `ProtectHome`.
+Update from your original clone:
+
+```sh
+./update.sh
+```
+
+The [update script](update.sh) refuses local changes, runs `git pull --ff-only` against your branch's upstream, prepares dependencies in a separate release, stops MyFlix, switches releases, and starts it again. Playback and downloads are interrupted during the restart. It checks HTTP health before reporting success. If preparation fails, the old service keeps running; if startup fails, it switches back to the previous release and attempts to restart it. State and media are preserved; back up state before upgrading because code rollback does not undo database changes.
+
+Old and failed release folders remain for recovery. Once an update is confirmed, you can remove unused folders under `/opt/myflix/releases/`; keep the target of `current` and the previous working release. Re-running `install.sh` deploys the current commit without pulling. Existing installations directly in `/opt/myflix` require manual migration before using these scripts. See the [operating guide](docs/guide.md#raspberry-pi-service).
 
 ```sh
 sudo systemctl status myflix
@@ -136,7 +157,7 @@ SQLite stores catalog edits, settings, follows, exclusions, and household watch 
 
 To back up, stop MyFlix and copy the entire data directory, including any SQLite `-wal` and `-shm` files, then restart. Back up media separately. Keep backups private: the data directory also contains internal secrets and provider login files.
 
-Before updating, back up state and stop the service. Update the checkout, run `mise install` and `mise run setup` using the same `MISE_DATA_DIR` as installation, then restart. See the [operating guide](docs/guide.md#tests-and-backup) for more detail.
+Before updating, back up state, then run `./update.sh` from your clone. The script handles the pinned tools, dependencies, and service restart. See the [operating guide](docs/guide.md#tests-and-backup) for more detail.
 
 ## Contribute
 
