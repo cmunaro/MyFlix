@@ -80,7 +80,7 @@ class ArtworkTest(unittest.TestCase):
                         self.assertEqual(image.format, "JPEG")
                         self.assertEqual(image.size, (20, 30))
                     response.close()
-            page = client.get("/admin")
+            page = client.get("/admin?section=settings")
             self.assertIn(b"No account or API key is needed", page.data)
             self.assertNotIn("TMDB_API_KEY", self.app.config)
             self.assertNotIn(b"Wikipedia", page.data)
@@ -149,7 +149,7 @@ class ArtworkTest(unittest.TestCase):
             self.assertGreater(int(settings(db)["artwork_retry_at"]), time.time())
         client = self.app.test_client()
         self.assertEqual(client.get("/").status_code, 200)
-        self.assertIn(b"Provider artwork is unavailable.", client.get("/admin").data)
+        self.assertIn(b"Provider artwork is unavailable.", client.get("/admin?section=settings").data)
         self.assertEqual(client.get(f'/art/{self.film["id"]}/poster').status_code, 404)
 
     def test_batch_limits_and_stop_between_downloads(self):

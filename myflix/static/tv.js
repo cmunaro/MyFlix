@@ -2,7 +2,9 @@
 (function () {
   var fullscreenPending = false;
   var userAgent = typeof navigator === 'undefined' ? '' : navigator.userAgent || '';
-  var tvPage = document.getElementById('player') || /tv-browse/.test(document.body.className || '');
+  var adminPage = /tv-admin/.test(document.body.className || '');
+  var editing = null;
+  var tvPage = document.getElementById('player') || /tv-browse/.test(document.body.className || '') || adminPage;
   var isTV = Boolean(tvPage && /VIDAA|Hisense|HiSmartTV|SmartTV|Smart-TV|HbbTV|Vewd/i.test(userAgent));
   function fullscreenElement() { return document.fullscreenElement || document.webkitFullscreenElement || null; }
   function enterFullscreen(target, onError) {
@@ -41,7 +43,7 @@
   }
   function array(nodes) { return Array.prototype.slice.call(nodes); }
   function controls() {
-    return array(document.querySelectorAll('a,button,input,summary,video')).filter(function (el) {
+    return array(document.querySelectorAll('a,button,input,select,summary,video')).filter(function (el) {
       return !el.disabled && el.offsetWidth && el.offsetHeight;
     });
   }
@@ -55,6 +57,9 @@
       window.scrollTo(0, window.pageYOffset + section.getBoundingClientRect().top - 90);
     } else if (el.closest && el.closest('.tv-header')) {
       window.scrollTo(0, 0);
+    } else if (adminPage && el.scrollIntoView) {
+      try { el.scrollIntoView({block: 'nearest', inline: 'nearest'}); }
+      catch (e) { el.scrollIntoView(false); }
     }
   }
   function remember(el) {
@@ -64,13 +69,36 @@
     rail.setAttribute('data-selected', array(rail.querySelectorAll('[data-card]')).indexOf(el));
     try { sessionStorage.setItem('myflix-focus:' + location.pathname + location.search, JSON.stringify({rail: rails.indexOf(rail), id: el.getAttribute('data-media-id')})); } catch (e) { /* Storage can be disabled on TVs. */ }
   }
-  document.addEventListener('focusin', function (event) { remember(event.target); });
+  document.addEventListener('focusin', function (event) {
+    if (editing && editing !== event.target) { editing.removeAttribute('data-editing'); editing = null; }
+    remember(event.target);
+  });
   document.addEventListener('keydown', function (event) {
     var code = event.keyCode, active = document.activeElement;
     // The player owns its controls and remote keys, including fullscreen.
     if (document.getElementById('player')) { return; }
-    if (active && /INPUT|TEXTAREA|SELECT/.test(active.tagName)) { return; }
-    if (code === 461 || code === 10009 || code === 8 || code === 27) {
+    var back = code === 461 || code === 10009 || code === 8 || code === 27;
+    if (adminPage && isTV && active && /INPUT|TEXTAREA|SELECT/.test(active.tagName)) {
+      if (code === 13) {
+        if (active.type === 'checkbox') { active.click(); }
+        else if (editing === active) { editing.removeAttribute('data-editing'); editing = null; }
+        else { editing = active; active.setAttribute('data-editing', 'true'); active.click(); }
+        if (active.tagName !== 'SELECT') { event.preventDefault(); }
+        return;
+      }
+      if (editing === active) {
+        if (back) { editing.removeAttribute('data-editing'); editing = null; event.preventDefault(); }
+        return;
+      }
+      if (!back && (code < 37 || code > 40)) { return; }
+    } else if (active && /INPUT|TEXTAREA|SELECT/.test(active.tagName)) { return; }
+    if (back) {
+      if (adminPage) {
+        var details = active && active.closest ? active.closest('details[open]') : null;
+        if (details) { details.open = false; focus(details.querySelector('summary')); event.preventDefault(); return; }
+        var current = document.querySelector('.admin-sidebar [aria-current]');
+        if (current && active !== current) { focus(current); event.preventDefault(); return; }
+      }
       if (fullscreenElement()) { exitFullscreen(); }
       else if (location.pathname !== '/' || location.search) { location.href = '/'; }
       event.preventDefault(); return;
@@ -107,6 +135,8 @@
     var best = null, score = Infinity;
     items.forEach(function (el) {
       if (el === active) { return; }
+      if (adminPage && (code === 38 || code === 40) && active.closest && el.closest &&
+          Boolean(active.closest('.admin-sidebar')) !== Boolean(el.closest('.admin-sidebar'))) { return; }
       var r = el.getBoundingClientRect();
       var dx = r.left + r.width / 2 - x, dy = r.top + r.height / 2 - y;
       var forward = code === 37 ? -dx : code === 39 ? dx : code === 38 ? -dy : dy;
@@ -115,7 +145,7 @@
     });
     focus(best); event.preventDefault();
   });
-  if (!document.getElementById('player') && document.body.className.indexOf('tv-browse') !== -1) {
+  if (!document.getElementById('player') && (document.body.className.indexOf('tv-browse') !== -1 || adminPage)) {
     var target = document.querySelector('[autofocus]') || document.querySelector('[data-initial-focus]');
     if (!document.querySelector('[autofocus]')) {
       try {

@@ -47,6 +47,7 @@ The optional TV test task pins its own Node version; production needs no Node.
 - `deploy/vibravid_publish.py` publishes successful downloads atomically. Keep
   active downloads separate from the library; never overwrite existing videos.
 - `myflix/static/tv.js` owns browsing navigation and shared fullscreen behavior.
+  `downloads.js` owns download action state and queue focus restoration.
   `player.js` owns playback controls, remote media keys, progress, and episode
   transitions. Each input must have one owner to avoid duplicate actions.
 - Preserve TV compatibility: use ES5 syntax in shipped JavaScript, feature-detect

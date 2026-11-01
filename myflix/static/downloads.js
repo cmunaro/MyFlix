@@ -7,6 +7,8 @@
   var results = document.getElementById('download-results');
   var queueMessage = document.getElementById('queue-message');
   var queueBusy = false;
+  var searchBusy = false;
+  var cancelPending = {};
   function node(tag, text, className) {
     var el = document.createElement(tag);
     if (text !== undefined) { el.textContent = text; }
@@ -21,7 +23,7 @@
     if (body !== null) { xhr.setRequestHeader('Content-Type', 'application/json'); xhr.setRequestHeader('X-CSRF-Token', token); }
     xhr.onload = function () {
       var data;
-      try { data = JSON.parse(xhr.responseText); } catch (e) { done('Session expired. Reload and sign in again.'); return; }
+      try { data = JSON.parse(xhr.responseText); } catch (e) { done('Could not read the response. Reload the page.'); return; }
       done(xhr.status === 200 ? null : (data.error || 'Request failed. Refresh the queue before retrying.'), data);
     };
     xhr.onerror = xhr.ontimeout = function () { done('Connection lost. Refresh the queue before retrying a download.'); };
@@ -35,12 +37,16 @@
       if (error) { queueMessage.textContent = error; return; }
       queueMessage.textContent = '';
       var container = document.getElementById('download-queue');
+      var focused = document.activeElement;
+      var focusedJob = focused && container.contains(focused) ? focused.getAttribute('data-job-id') : null;
+      var restore = null;
       container.textContent = '';
       var total = 0;
-      ['active', 'scheduled', 'history'].forEach(function (group) {
+      ['active', 'scheduled'].forEach(function (group) {
         var items = data[group] || [];
         if (!items.length) { return; }
-        container.appendChild(node('h3', group === 'active' ? 'Downloading' : group === 'scheduled' ? 'Queued' : 'Recent history'));
+        var section = node('div', undefined, 'queue-group');
+        section.appendChild(node('h3', group === 'active' ? 'Downloading now' : 'Up next'));
         items.forEach(function (item) {
           total += 1;
           var row = node('div', undefined, 'download-job');
@@ -48,24 +54,36 @@
           info.appendChild(node('strong', item.title || 'Untitled download'));
           var progress = Number(item.progress);
           info.appendChild(node('p', [item.site, item.status, isFinite(progress) && item.progress !== undefined ? progress.toFixed(1) + '%' : '', item.speed].filter(Boolean).join(' · ')));
+          if (isFinite(progress) && item.progress !== undefined) {
+            var bar = node('progress'); bar.max = 100; bar.value = Math.max(0, Math.min(100, progress)); bar.setAttribute('aria-label', 'Download progress'); info.appendChild(bar);
+          }
           row.appendChild(info);
-          if (group !== 'history' && item.id) {
+          if (item.id) {
             var cancel = node('button', 'Cancel' + (item.series_name ? ' series' : ' download'));
             cancel.type = 'button';
+            cancel.setAttribute('data-job-id', item.id);
+            cancel.setAttribute('aria-label', 'Cancel ' + (item.title || 'download'));
+            if (cancelPending[item.id]) { cancel.setAttribute('aria-disabled', 'true'); }
+            if (String(item.id) === focusedJob) { restore = cancel; }
             cancel.onclick = function () {
-              cancel.disabled = true;
+              if (cancelPending[item.id]) { return; }
+              cancelPending[item.id] = true;
+              cancel.setAttribute('aria-disabled', 'true');
               api('cancel', {download_id: item.id}, function (err) {
                 queueMessage.textContent = err || 'Cancellation requested, including related episodes.';
-                cancel.disabled = false;
+                delete cancelPending[item.id];
+                cancel.removeAttribute('aria-disabled');
                 if (!err) { refreshQueue(); }
               });
             };
             row.appendChild(cancel);
           }
-          container.appendChild(row);
+          section.appendChild(row);
         });
+        container.appendChild(section);
       });
-      if (!total) { container.appendChild(node('p', 'No downloads yet. Search for a title above.')); }
+      if (!total) { container.appendChild(node('p', 'Nothing downloading. Find a title above to get started.', 'queue-empty')); }
+      if (focusedJob !== null) { (restore || document.getElementById('refresh-downloads')).focus(); }
     });
     api('status', null, function (error, data) {
       connection.textContent = error || ('Download engine connected · ' + data.slots.active + '/' + data.slots.max + ' active · ' + data.queued + ' queued' + (data.disk && data.disk.free !== undefined ? ' · ' + (data.disk.free / 1073741824).toFixed(1) + ' GB free' : ''));
@@ -81,9 +99,12 @@
     controls.appendChild(choose);
     article.appendChild(controls);
     var payload = item.payload || {};
+    var busy = false;
     payload.is_movie = Boolean(item.is_movie);
     function download(season, episodes) {
-      choose.disabled = true;
+      if (busy) { return; }
+      busy = true;
+      choose.setAttribute('aria-disabled', 'true');
       choose.textContent = 'Sending…';
       var body = {site: item.site, payload: payload};
       if (season) { body.season = season; body.episodes = episodes; }
@@ -95,34 +116,44 @@
       });
     }
     choose.onclick = function () {
+      if (busy) { return; }
       if (item.is_movie) { download(); return; }
-      choose.disabled = true;
+      busy = true;
+      choose.setAttribute('aria-disabled', 'true');
       api('seasons', {site: item.site, payload: payload}, function (error, data) {
-        if (error) { message.textContent = error; choose.disabled = false; return; }
-        if (!data.seasons || !data.seasons.length) { message.textContent = 'No seasons available from this provider.'; choose.disabled = false; return; }
+        busy = false;
+        choose.removeAttribute('aria-disabled');
+        if (error) { message.textContent = error; return; }
+        if (!data.seasons || !data.seasons.length) { message.textContent = 'No seasons available from this provider.'; return; }
         var label = node('label', 'Season');
         var season = node('select');
+        season.setAttribute('aria-label', 'Season for ' + item.title);
         data.seasons.forEach(function (s) { var option = node('option', 'Season ' + s.number + ' · ' + s.episodes + ' episodes'); option.value = s.number; season.appendChild(option); });
         label.appendChild(season);
         var epLabel = node('label', 'Episodes');
         var episodes = node('input'); episodes.value = '*'; episodes.maxLength = 200; episodes.setAttribute('aria-label', 'Episodes: * for all, 1-4, or 1,3'); epLabel.appendChild(episodes);
         controls.insertBefore(label, choose); controls.insertBefore(epLabel, choose);
-        choose.textContent = 'Download episodes'; choose.disabled = false;
+        choose.textContent = 'Download episodes';
         choose.onclick = function () { download(season.value, episodes.value); };
+        if (document.activeElement === choose) { season.focus(); }
       });
     };
     return article;
   }
   document.getElementById('download-search').onsubmit = function (event) {
     event.preventDefault();
-    var button = document.getElementById('search-downloads'); button.disabled = true;
+    if (searchBusy) { return; }
+    searchBusy = true;
+    var button = document.getElementById('search-downloads'); button.setAttribute('aria-disabled', 'true');
     message.textContent = 'Searching providers…'; results.textContent = '';
     api('search', {query: document.getElementById('download-query').value, site: document.getElementById('download-provider').value}, function (error, data) {
-      button.disabled = false;
+      searchBusy = false;
+      button.removeAttribute('aria-disabled');
       if (error) { message.textContent = error; return; }
       var items = data.results || [];
       message.textContent = items.length + ' results' + (data.failed && data.failed.length ? ' · Some providers did not respond: ' + data.failed.join(', ') : '');
       items.forEach(function (item) { results.appendChild(resultCard(item)); });
+      if (document.activeElement === button && items.length) { results.querySelector('button').focus(); }
     });
   };
   api('sites', null, function (error, data) {

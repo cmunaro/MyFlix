@@ -172,6 +172,32 @@ class MyFlixTest(unittest.TestCase):
         search = self.client.get("/?q=Show").data.decode()
         self.assertEqual(re.findall(r"<h2>(.*?)</h2>", search), ["Continue watching", "Series"])
 
+    def test_admin_sections_search_and_action_destinations(self):
+        self.configure()
+        self.video("Show.S01E01.Start.mp4")
+        self.video("Film.mp4")
+        scan(self.database)
+        downloads = self.client.get("/admin").data
+        self.assertIn(b'class="tv-admin"', downloads)
+        self.assertIn(b"Current downloads", downloads)
+        self.assertNotIn(b'Recent history', downloads)
+        self.assertNotIn(b'id="videos-path"', downloads)
+        self.assertNotIn(b'class="catalog-item"', downloads)
+        self.assertEqual(self.client.get("/admin?section=unknown").data, downloads)
+        settings_page = self.client.get("/admin?section=settings").data
+        self.assertIn(b'id="videos-path"', settings_page)
+        self.assertNotIn(b'downloads.js', settings_page)
+        library = self.client.get("/admin?section=library&q=Show").data
+        self.assertIn(b"Start", library)
+        self.assertNotIn(b'value="Film"', library)
+        self.assertIn(b'value="Show"', library)
+        self.assertNotIn(b'id="download-search"', library)
+        self.assertIn("section=settings", self.post("/admin/settings", {"videos_path": str(self.library)}).location)
+        self.assertIn("section=library", self.post("/admin/scan").location)
+        item = self.item()
+        response = self.post(f'/admin/media/{item["id"]}', {"title": "Updated"})
+        self.assertIn("section=library", response.location)
+
     def test_episode_playback_contract_orders_seasons_and_excludes_hidden_items(self):
         self.configure()
         for name in ("Show.S01E01.Start.mp4", "Show.S01E02.Hidden.mp4", "Show.S02E01.Return.mp4", "Film.mp4"):

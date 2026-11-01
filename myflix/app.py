@@ -230,11 +230,18 @@ def create_app(config=None):
 
     @app.get("/admin")
     def admin():
+        section = request.args.get("section", "downloads")
+        if section not in ("downloads", "library", "settings"):
+            section = "downloads"
+        query = request.args.get("q", "").strip()[:200]
         with connect(database) as db:
             config = settings(db)
             items = db.execute("SELECT * FROM media WHERE root=? ORDER BY series,season,episode,title",
                                (config.get("videos_path", ""),)).fetchall()
-        return render_template("admin.html", config=config, items=items, notice=request.args.get("notice", ""))
+        if query:
+            items = [item for item in items if query.casefold() in (item["title"] + " " + item["series"]).casefold()]
+        return render_template("admin.html", config=config, items=items, section=section,
+                               query=query, notice=request.args.get("notice", ""))
 
     @app.post("/admin/settings")
     def save_settings():
@@ -256,7 +263,7 @@ def create_app(config=None):
                 db.execute("UPDATE media SET available=0")
             db.execute("INSERT OR REPLACE INTO settings VALUES('videos_path',?)", (str(root),))
             db.execute("DELETE FROM settings WHERE key='vibravid_url'")
-        return redirect(url_for("admin", notice="Settings saved. Scan the library to import files."))
+        return redirect(url_for("admin", section="settings", notice="Folder saved. Open Library to scan for files."))
 
     @app.route("/admin/vibravid/<action>", methods=["GET", "POST"])
     def downloads_api(action):
@@ -301,7 +308,7 @@ def create_app(config=None):
             count = run_scan()
         except OSError as error:
             raise ValueError(str(error)) from error
-        return redirect(url_for("admin", notice=f"Scan complete: {count} videos found."))
+        return redirect(url_for("admin", section="library", notice=f"Scan complete: {count} videos found."))
 
     @app.post("/admin/media/<int:media_id>")
     def edit_media(media_id):
@@ -325,7 +332,7 @@ def create_app(config=None):
                  "hidden" in request.form, media_id, settings(db).get("videos_path", "")))
             if not result.rowcount:
                 abort(404)
-        return redirect(url_for("admin", notice="Catalog updated."))
+        return redirect(url_for("admin", section="library", notice="Catalog updated."))
 
     @app.get("/health")
     def health():

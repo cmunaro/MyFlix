@@ -1,0 +1,92 @@
+/* Generous spacing and native controls for a remote, keyboard, or pointer. */
+.tv-admin{--bg:#121314;--panel:#1b1d20;--ink:#f4f3ef;--muted:#a7a9ad;--accent:#f1f0eb;--line:#34363b;font-size:22px;background:var(--bg)}
+.tv-admin main{max-width:1800px;margin-left:270px;padding:48px 4% 80px;min-height:100vh}
+.admin-sidebar{position:fixed;left:0;top:0;bottom:0;width:270px;padding:48px 24px;background:#0b0c0e;border-right:1px solid #292b30;z-index:5}
+.admin-wordmark{display:inline-block;color:#e50914;font-size:34px;font-weight:900;letter-spacing:-1.5px;margin:0 16px 46px}
+.sidebar-label{font-size:11px;letter-spacing:2px;margin:0 16px 18px;color:#7e8289;font-weight:bold}
+.admin-sidebar nav a{display:flex;align-items:center;min-height:64px;margin:0 0 12px;padding:14px 18px;border-radius:7px;font-size:21px;color:#a9acb2;border:1px solid transparent}
+.admin-sidebar nav a span{display:inline-block;width:36px;font-size:27px;line-height:1}
+.admin-sidebar nav a[aria-current]{color:#fff;background:#25272c;border-color:#41444c;font-weight:bold}
+.back-to-tv{display:block;padding:18px 12px;margin-top:44px;font-size:17px;color:#d7d8dc;border-top:1px solid #292b30}
+.remote-hint{font-size:13px;line-height:1.8;color:#777d87;padding:0 12px;margin-top:24px}
+.admin-heading{display:flex;align-items:center;justify-content:space-between;margin-bottom:32px}
+.admin-kicker{font-size:11px;letter-spacing:2px;color:#9ea2aa;font-weight:bold;margin:0 0 10px}
+.admin-heading h1{font-size:48px;line-height:1.1;letter-spacing:-2px;margin:8px 0 12px}
+.admin-heading p:last-child{font-size:19px;color:var(--muted);margin:0;max-width:650px}
+.admin-panel{background:var(--panel);border:1px solid #32353b;border-radius:12px;padding:28px 32px;margin-bottom:28px}
+.panel-heading{display:flex;align-items:center;justify-content:space-between;margin-bottom:24px}
+.panel-heading h2{font-size:26px;letter-spacing:-.7px;margin:0}
+.section-tag{font-size:11px;letter-spacing:1.5px;color:#a6aab1;font-weight:bold}
+.tv-admin label{font-size:17px;line-height:1.4;color:#d8dbe1}
+.tv-admin input,.tv-admin select{border:1px solid #494d56;background:#101114;color:#fff;border-radius:7px;padding:16px;min-height:60px;font:inherit;font-size:21px;line-height:1.3;margin:10px 0 0}
+.tv-admin input::placeholder{color:#7b808b}
+.tv-admin button,.tv-admin .button{border-radius:7px;min-height:60px;padding:15px 24px;font-size:20px;line-height:1.4;font-weight:bold;border:1px solid #4b4f59;background:#30333a;color:#fff}
+.tv-admin .primary{color:#16171a;background:#f2f0eb;border-color:#f2f0eb}
+.tv-admin button:hover,.tv-admin .button:hover{background:#454953}
+.tv-admin .primary:hover{background:#d9d7d1}
+.tv-admin .secondary{background:transparent;color:#e3e4e8}
+.tv-admin a:focus,.tv-admin button:focus,.tv-admin input:focus,.tv-admin select:focus,.tv-admin summary:focus{outline:4px solid #fff;outline-offset:5px;box-shadow:0 0 0 8px #141518;z-index:2}
+.tv-admin [data-editing]{outline-color:#e9ae61!important;background:#29231a}
+.tv-admin [aria-disabled=true]{opacity:.65;cursor:default}
+.tv-admin .download-search{display:flex;align-items:flex-end;gap:0}
+.download-search label{margin-right:20px;min-width:150px;flex:1}
+.download-search .title-search{flex:2.2}
+.download-search button{flex:0 0 auto;margin-bottom:0}
+.live-message{font-size:18px;margin:20px 0 0;line-height:1.5;color:#d6d9df;overflow-wrap:break-word}
+.live-message:empty{display:none}
+.download-results{display:flex;flex-wrap:wrap;margin:12px -10px -10px}
+.download-result{width:calc(50% - 20px);border:1px solid #424650;padding:22px;margin:16px 10px 10px;border-radius:9px;background:#24272d}
+.download-result h3{font-size:25px;line-height:1.25;letter-spacing:-.5px;margin:0 0 10px;overflow-wrap:break-word}
+.download-result p{font-size:16px;margin:0 0 22px;color:#aab0ba}
+.download-options{display:block}
+.download-options label{display:block;margin-bottom:18px}
+.download-options button{width:100%}
+.engine-status{font-size:16px;color:#aeb4bd;margin:0 0 20px}
+.queue-panel .panel-heading{margin-bottom:12px}
+.queue-group{margin-top:24px}
+.queue-group h3{font-size:12px;letter-spacing:2px;text-transform:uppercase;color:#a9afb9;margin:0 0 12px}
+.download-job{display:flex;justify-content:space-between;align-items:center;border-top:1px solid #373b43;border-bottom:0;padding:22px 0;gap:0}
+.download-job>div{flex:1;min-width:0;padding-right:28px}
+.download-job strong{display:block;font-size:23px;line-height:1.3;overflow-wrap:break-word}
+.download-job p{font-size:15px;line-height:1.5;margin:8px 0 0;color:#aab0ba}
+.download-job progress{display:block;width:100%;height:6px;margin-top:16px;border:0;border-radius:3px;overflow:hidden;accent-color:#e50914;background:#3c4049}
+.download-job progress::-webkit-progress-bar{background:#3c4049}
+.download-job progress::-webkit-progress-value{background:#e50914}
+.download-job progress::-moz-progress-bar{background:#e50914}
+.queue-empty{padding:24px 0 12px;border-top:1px solid #373b43;font-size:20px;color:#d5d8de}
+.panel-note{font-size:15px;line-height:1.65;color:#8f96a2;margin:20px 0 0}
+.catalog-search{display:flex;align-items:flex-end;margin-bottom:24px}
+.catalog-search label{flex:1;margin-right:20px}
+.catalog-search button,.catalog-search .button{margin-left:12px}
+.catalog-item{padding:0;border-bottom:1px solid #3b3e46}
+.catalog-item summary{display:flex;align-items:center;padding:24px 10px;list-style:none;position:relative;border-radius:5px}
+.catalog-item summary::-webkit-details-marker{display:none}
+.catalog-item .catalog-title{float:none;flex:1;min-width:0;font-size:23px;font-weight:bold;line-height:1.4;color:#f2f3f5;margin-right:20px;overflow-wrap:break-word}
+.catalog-title small{font-size:16px;font-weight:normal;color:#a4aab4;margin-top:5px;line-height:1.5}
+.catalog-item .catalog-state{float:none;text-transform:uppercase;font-size:11px;letter-spacing:1px;border:1px solid #47534b;padding:5px 10px;border-radius:4px;line-height:1.3;color:#b7d7bd}
+.catalog-state.is-hidden{color:#c4c5ca;border-color:#52555e}
+.catalog-state.is-missing{color:#e3b48e;border-color:#785d46}
+.catalog-item .catalog-chevron{float:none;font-size:24px;color:#bbbfc8;margin-left:24px}
+.catalog-item[open]{padding-bottom:24px}
+.catalog-item[open] .catalog-chevron{transform:rotate(180deg)}
+.tv-admin .edit-form{display:flex;flex-wrap:wrap;align-items:flex-end;margin:6px 10px 20px;gap:0}
+.tv-admin .edit-form>label{flex:1;min-width:260px;margin:0 20px 24px 0}
+.tv-admin .edit-form>label:first-of-type{flex:1}
+.edit-form label small{display:inline;min-height:0;font-size:12px;color:#9299a5}
+.episode-fields{display:flex;flex:1;min-width:220px;margin:0 0 24px}
+.episode-fields label{flex:1;min-width:0;margin-right:20px}
+.tv-admin .edit-form .checkbox{min-width:220px;align-items:center;min-height:60px;font-size:18px}
+.tv-admin input[type=checkbox]{width:28px;height:28px;min-height:28px;margin:0 12px 0 0;accent-color:#e50914;flex:none}
+.edit-form button{margin-bottom:24px}
+.tv-admin .filepath{font-size:13px;margin:0 10px;color:#858c98}
+.tv-admin .settings-form{display:block}
+.settings-form label{max-width:1000px;min-width:0}
+.settings-form small{font-size:14px;line-height:1.6;margin-top:12px;color:#939aa6}
+.settings-form button{margin-top:26px}
+.admin-empty{padding:32px 0;text-align:center}
+.admin-empty h3{font-size:28px;margin:20px 0 12px}
+.admin-empty p{font-size:18px;max-width:580px;margin:0 auto 28px;line-height:1.6}
+.tv-admin .notice,.tv-admin .error{font-size:18px;line-height:1.6;overflow-wrap:break-word}
+@media(min-width:1700px){.tv-admin main{padding-top:65px;margin-left:300px}.admin-sidebar{width:300px}.admin-sidebar nav a{font-size:25px;min-height:72px}.admin-wordmark{font-size:40px}.back-to-tv{font-size:20px}.remote-hint{font-size:15px}.admin-heading h1{font-size:60px}.admin-heading p:last-child{font-size:23px}.tv-admin{font-size:25px}.tv-admin label{font-size:22px}.tv-admin input,.tv-admin select,.tv-admin button,.tv-admin .button{font-size:25px;min-height:72px}.admin-panel{padding:36px 40px}.download-result h3{font-size:31px}.panel-heading h2{font-size:31px}.engine-status,.download-result p,.download-job p{font-size:19px}.panel-note{font-size:18px}.section-tag{font-size:13px}.catalog-item .catalog-title{font-size:27px}.catalog-title small{font-size:20px}}
+@media(max-width:1100px){.tv-admin main{margin-left:225px;padding:36px 4% 65px}.admin-sidebar{width:225px;padding:36px 18px}.admin-wordmark{font-size:30px;margin-left:10px}.admin-sidebar nav a{font-size:19px;padding:14px 12px}.admin-heading h1{font-size:40px}.admin-heading p:last-child{font-size:17px}.admin-panel{padding:24px}.download-search{flex-wrap:wrap}.download-search .title-search{flex:1 0 100%;margin:0 0 20px}.download-result{width:calc(100% - 20px)}.back-to-tv{font-size:15px;padding-left:6px}.remote-hint{font-size:11px;padding:0 6px}.catalog-search{flex-wrap:wrap}.catalog-search label{flex-basis:100%;margin:0 0 20px}.catalog-search button{margin-left:0}}
+@media(max-width:650px){.admin-sidebar{position:static;width:100%;padding:24px 5% 18px;border-bottom:1px solid #292b30}.admin-wordmark{margin:0 0 18px;font-size:29px}.sidebar-label,.remote-hint{display:none}.admin-sidebar nav{display:flex}.admin-sidebar nav a{font-size:15px;min-height:50px;margin:0 8px 0 0;padding:10px 12px;flex:1;justify-content:center}.admin-sidebar nav a span{display:none}.back-to-tv{display:inline-block;border:0;padding:12px 0 0;margin-top:10px}.tv-admin main{margin:0;padding:28px 5% 60px}.admin-heading{display:block}.admin-heading h1{font-size:38px}.admin-heading form{margin-top:24px}.admin-panel{padding:22px 18px}.section-tag{font-size:9px}.panel-heading h2{font-size:23px}.tv-admin input,.tv-admin select,.tv-admin button,.tv-admin .button{font-size:18px}.download-search label{margin-right:12px;min-width:0}.download-search button{padding:16px}.download-job{display:block}.download-job>div{padding:0}.download-job button{margin-top:18px}.catalog-item .catalog-title{font-size:19px}.catalog-title small{font-size:14px}.catalog-item .catalog-chevron{margin-left:12px}.tv-admin .edit-form>label{min-width:100%;margin-right:0}.episode-fields{min-width:100%;margin-right:0}.admin-kicker{font-size:10px}.panel-note{font-size:14px}}
