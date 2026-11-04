@@ -202,7 +202,7 @@ class MyFlixTest(unittest.TestCase):
         unwatched = re.search(r'<h2>Not watched</h2>(.*?)</section>', home, re.S)
         self.assertEqual(re.findall(r'data-media-id="(\d+)"', unwatched[1]), [str(first)])
 
-    def test_only_continue_watching_cards_show_playback_details(self):
+    def test_all_watched_thumbnails_show_progress_and_continue_keeps_details(self):
         self.configure()
         for name in ("Show.S01E01.Start.mp4", "Show.S01E02.Next.mp4", "Film.mp4", "New.Film.mp4"):
             self.video(name)
@@ -222,17 +222,33 @@ class MyFlixTest(unittest.TestCase):
                 with self.subTest(url=url, shelf=label):
                     self.assertIn('<img src="/art/', shelf)
                     self.assertIn('<div class="tile-caption"><strong>', shelf)
+                    cards = re.findall(r'<a class="tile\b(.*?)</a>', shelf, re.S)
+                    self.assertTrue(cards)
+                    for card in cards:
+                        media_id = int(re.search(r'data-media-id="(\d+)"', card)[1])
+                        if media_id in (episode, film):
+                            picture = card.split('<div class="tile-caption">')[0]
+                            self.assertIn('<progress ', picture)
+                            self.assertIn('value="100" max="100"' if media_id == film
+                                          else 'value="30.0" max="100.0"', picture)
+                        else:
+                            self.assertNotIn('<progress ', card)
                     if label == "Continue watching":
                         self.assertIn('class="tile-badge">Resume', shelf)
                         self.assertIn('<progress ', shelf)
                         self.assertIn('<span>Episode</span>', shelf)
                     else:
                         for decoration in ('class="tile-badge"', 'class="tile-logo"',
-                                           'class="tile-play"', '<progress ', '</strong><span>'):
+                                           'class="tile-play"', '</strong><span>'):
                             self.assertNotIn(decoration, shelf)
         detail = self.client.get(f"/series/{episode}").data.decode()
         self.assertIn('S1:E1 · Start</strong>', detail)
         self.assertIn('S1:E2 · Next</strong>', detail)
+
+        # Marking watched without a known duration still renders a full line.
+        self.post(f"/api/progress/{film}", body={"position": 0, "duration": 0, "watched": True})
+        home = self.client.get("/?view=movies").data.decode()
+        self.assertIn('<progress value="100" max="100"', home)
 
     def test_not_watched_shelf_tracks_completion_and_available_series(self):
         self.configure()

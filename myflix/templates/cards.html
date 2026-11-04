@@ -9,9 +9,9 @@
         {% if continuing %}<span class="tile-logo" aria-hidden="true">M</span>
         {% if item.watched %}<span class="tile-badge">✓ Watched</span>{% elif item.position > 0 %}<span class="tile-badge">Resume · {{ (item.position / 60)|int }} min</span>{% endif %}
         <span class="tile-play" aria-hidden="true">▶</span>{% endif %}
+        {% if not item.discovery and (item.watched or (item.position > 0 and item.duration > 0)) %}<progress value="{{ 100 if item.watched else item.position }}" max="{{ 100 if item.watched else item.duration }}" aria-label="Playback progress"></progress>{% endif %}
       </div>
       <div class="tile-caption"><strong>{% if episode_cards and item.series %}S{{ item.season }}:E{{ item.episode }} · {{ item.title }}{% else %}{{ item.series or item.title }}{% endif %}</strong>{% if continuing %}<span>{{ 'Episode' if item.series else 'Movie' }}</span>{% elif item.discovery %}<span>{{ item.release or 'Discover · View details' }}</span>{% endif %}</div>
-      {% if continuing and item.position > 0 and item.duration > 0 and not item.watched %}<progress value="{{ item.position }}" max="{{ item.duration }}" aria-label="Playback progress"></progress>{% endif %}
     </a>
     {% endfor %}
   </div>
