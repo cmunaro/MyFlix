@@ -5,8 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="csrf-token" content="{{ session.csrf }}">
   <title>{% block title %}MyFlix{% endblock %}</title>
-  <link rel="stylesheet" href="{{ url_for('static', filename='tv.css', v='thumbnail-progress-2') }}">
-  <script src="{{ url_for('static', filename='tv.js') }}" defer></script>
+  <link rel="stylesheet" href="{{ url_for('static', filename='tv.css', v='desktop-arrows-1') }}">
+  <script src="{{ url_for('static', filename='tv.js', v='desktop-arrows-1') }}" defer></script>
   {% block scripts %}{% endblock %}
 </head>
 <body class="{% block body_class %}tv-browse{% endblock %}">

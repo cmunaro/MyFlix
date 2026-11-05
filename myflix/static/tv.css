@@ -111,3 +111,16 @@
 .discovery-source a { text-decoration: underline; }
 @media(max-width:650px) { .preview-heading { max-width: 90%; } .preview-heading h1 { font-size: 34px; } .discovery-detail .hero-content { width: 100%; } }
 @media(max-height:650px) { .preview-heading { display: none; } }
+
+/* Created only for desktop pointers; TV browsers never receive these buttons. */
+.shelf-arrow { display: none; }
+@media (hover: hover) and (pointer: fine) {
+  .shelf-arrow { display: block; position: absolute; z-index: 4; width: 4%; min-width: 36px; padding: 0; border-radius: 4px; background: rgba(20,20,20,.65); -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px); color: white; font-size: 52px; line-height: 1; opacity: 0; pointer-events: none; transition: opacity .15s ease; }
+  .shelf-arrow-left { left: 0; }
+  .shelf-arrow-right { right: 0; }
+  .tv-shelf:hover .shelf-arrow, .shelf-arrow:focus { opacity: 1; pointer-events: auto; }
+  .shelf-arrow:hover { background: rgba(20,20,20,.8); }
+  .shelf-arrow[aria-disabled="true"] { visibility: hidden; pointer-events: none; }
+  .shelf-arrow[aria-disabled="true"]:focus { visibility: visible; opacity: .4; }
+  .shelf-arrow:focus { outline-offset: -5px; }
+}

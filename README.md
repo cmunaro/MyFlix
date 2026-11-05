@@ -85,6 +85,8 @@ Acknowledged film and single-episode downloads interrupted by a reboot or servic
 
 ## Use your TV remote
 
+Desktop browsers with a mouse or trackpad show arrows over blurred panels when you hover a thumbnail shelf, including season episode lists. Each click browses a page of titles with some overlap. The arrows also support keyboard focus. TV browsers, including TVs with a connected mouse, and touch-only browsers do not receive these controls.
+
 | Input | Action |
 | --- | --- |
 | Arrow keys / D-pad | Move through shelves, episodes, and controls |

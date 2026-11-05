@@ -43,9 +43,65 @@
     document.addEventListener('click', enterFromInteraction, true);
   }
   function array(nodes) { return Array.prototype.slice.call(nodes); }
+  function desktopShelfArrows() {
+    // A mouse connected to a TV must never enable the desktop controls.
+    if (isTV || !window.matchMedia || !window.matchMedia('(hover: hover) and (pointer: fine)').matches) { return; }
+    array(document.querySelectorAll('[data-rail]')).forEach(function (rail) {
+      var shelf = rail.parentNode;
+      var requested = null;
+      function button(direction, label, glyph) {
+        var el = document.createElement('button');
+        el.type = 'button';
+        el.className = 'shelf-arrow shelf-arrow-' + direction;
+        el.textContent = glyph;
+        el.setAttribute('aria-label', label + ' in ' + rail.getAttribute('aria-label'));
+        el.addEventListener('click', function () {
+          if (el.getAttribute('aria-disabled') === 'true') { return; }
+          var card = rail.querySelector('[data-card]');
+          var step = Math.max(rail.clientWidth / 2, rail.clientWidth - (card ? card.offsetWidth : 0));
+          var destination = Math.max(0, Math.min(rail.scrollWidth - rail.clientWidth,
+            (requested === null ? rail.scrollLeft : requested) + (direction === 'left' ? -step : step)));
+          requested = destination;
+          if (rail.scrollTo && 'scrollBehavior' in document.documentElement.style &&
+              !window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+            rail.scrollTo({left: destination, behavior: 'smooth'});
+          } else { rail.scrollLeft = destination; }
+          update();
+        });
+        shelf.appendChild(el);
+        return el;
+      }
+      var previous = button('left', 'Previous titles', '\u2039');
+      var next = button('right', 'Next titles', '\u203a');
+      function availability(el, unavailable) {
+        el.setAttribute('aria-disabled', unavailable ? 'true' : 'false');
+        el.tabIndex = unavailable ? -1 : 0;
+      }
+      function update() {
+        var maximum = Math.max(0, rail.scrollWidth - rail.clientWidth);
+        availability(previous, rail.scrollLeft <= 1);
+        availability(next, rail.scrollLeft >= maximum - 1);
+        if (requested !== null && Math.abs(rail.scrollLeft - requested) <= 1) { requested = null; }
+        var picture = rail.querySelector('.tile-picture');
+        if (picture) {
+          var bounds = picture.getBoundingClientRect();
+          var top = bounds.top - shelf.getBoundingClientRect().top;
+          previous.style.top = next.style.top = top + 'px';
+          previous.style.height = next.style.height = bounds.height + 'px';
+        }
+      }
+      function cancelRequested() { requested = null; }
+      rail.addEventListener('scroll', update);
+      rail.addEventListener('wheel', cancelRequested);
+      rail.addEventListener('touchstart', cancelRequested);
+      rail.addEventListener('keydown', cancelRequested);
+      window.addEventListener('resize', function () { requested = null; update(); });
+      update();
+    });
+  }
   function controls() {
     return array(document.querySelectorAll('a,button,input,select,summary,video')).filter(function (el) {
-      return !el.disabled && el.offsetWidth && el.offsetHeight;
+      return !el.disabled && el.getAttribute('aria-disabled') !== 'true' && el.offsetWidth && el.offsetHeight;
     });
   }
   function centerCard(el) {
@@ -176,4 +232,5 @@
     }
     focus(target);
   }
+  desktopShelfArrows();
 }());

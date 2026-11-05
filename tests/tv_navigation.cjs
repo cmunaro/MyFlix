@@ -5,13 +5,19 @@ const vm = require('node:vm');
 const code = fs.readFileSync('myflix/static/tv.js', 'utf8');
 const css = fs.readFileSync('myflix/static/tv.css', 'utf8');
 assert(!/\.tile:hover/.test(css), 'hover must not draw a second selection beside keyboard focus');
-function screen(storage = {}, height = 900) {
+function screen(storage = {}, height = 900, options = {}) {
   const listeners = {};
-  const window = {pageYOffset: 0, innerHeight: height, scrollTo(x, y) { this.pageYOffset = y; }};
+  const windowListeners = {};
+  const window = {pageYOffset: 0, innerHeight: height, scrollTo(x, y) { this.pageYOffset = y; },
+    addEventListener(name, fn) { (windowListeners[name] ||= []).push(fn); }};
+  if (options.pointer !== undefined) {
+    window.matchMedia = query => ({matches: query.includes('reduced-motion') ? !!options.reducedMotion : options.pointer});
+  }
   let document;
   function element(attrs = {}) {
     return {
-      tagName: 'A', offsetWidth: 280, offsetHeight: 190, offsetLeft: 0,
+      tagName: 'A', offsetWidth: 280, offsetHeight: 190, offsetLeft: 0, style: {}, handlers: {},
+      addEventListener(name, fn) { this.handlers[name] = fn; },
       getAttribute(key) { return Object.hasOwn(attrs, key) ? String(attrs[key]) : null; },
       hasAttribute(key) { return Object.hasOwn(attrs, key); },
       setAttribute(key, value) { attrs[key] = String(value); },
@@ -23,28 +29,36 @@ function screen(storage = {}, height = 900) {
   const hero = element(); hero.hero = true;
   const header = element();
   const rails = [0, 1].map((row) => {
-    const rail = element(); rail.offsetLeft = 0; rail.clientWidth = 600; rail.scrollLeft = 0;
-    rail.parentNode = {getBoundingClientRect: () => ({top: 650 + row * 350 - window.pageYOffset, height: 310})};
+    const rail = element({'aria-label': row === 0 ? 'Continue watching' : 'Season 1'}); rail.offsetLeft = 0; rail.clientWidth = 600; rail.scrollLeft = 0;
+    rail.scrollWidth = row === 0 ? 2400 : 1200;
+    rail.parentNode = {buttons: [], appendChild(el) { this.buttons.push(el); },
+      getBoundingClientRect: () => ({top: 650 + row * 350 - window.pageYOffset, height: 310})};
+    if (options.smooth) {
+      rail.scrollTo = function (request) { this.lastRequest = request; };
+    }
     rail.cards = Array.from({length: row === 0 ? 8 : 4}, (_, col) => {
       const card = element({'data-card': '', 'data-media-id': row * 10 + col});
       card.offsetLeft = col * 300 + 24; card.parentNode = rail;
       return card;
     });
     rail.querySelectorAll = () => rail.cards;
-    rail.querySelector = () => rail.cards[0];
+    rail.querySelector = selector => selector === '.tile-picture' ? {getBoundingClientRect: () => ({top: 700 + row * 350 - window.pageYOffset, height: 190})} : rail.cards[0];
     return rail;
   });
   document = {
-    body: {className: 'tv-browse'}, activeElement: null,
+    body: {className: 'tv-browse', classList: {add() {}}}, activeElement: null,
+    documentElement: {style: options.smooth ? {scrollBehavior: ''} : {}},
+    createElement() { const el = element(); el.tagName = 'BUTTON'; return el; },
     getElementById() { return null; },
     addEventListener(name, fn) { listeners[name] = fn; },
     querySelector(selector) { return selector === '[data-initial-focus]' ? hero : selector === '.tv-header a' ? header : null; },
     querySelectorAll(selector) { return selector === '[data-rail]' ? rails : [header, hero, ...rails.flatMap(r => r.cards)]; }
   };
-  vm.runInNewContext(code, {document, window, location: {pathname: '/', search: ''}, sessionStorage: {
+  vm.runInNewContext(code, {document, window, navigator: {userAgent: options.userAgent || ''}, location: {pathname: '/', search: ''}, sessionStorage: {
     getItem(key) { return storage[key] || null; }, setItem(key, value) { storage[key] = value; }
   }});
   return {document, window, rails, hero, storage,
+    resize() { (windowListeners.resize || []).forEach(fn => fn()); },
     move(target, x, y) { listeners.mousemove({target, clientX: x, clientY: y}); },
     key(code) { listeners.keydown({keyCode: code, preventDefault() {}}); }};
 }
@@ -94,3 +108,57 @@ for (const height of [480, 720, 1080]) {
   assert(bounds.top >= 0 && bounds.top + bounds.height <= height, 'full row remains in viewport');
 }
 console.log('Remote navigation passed: shelves centered at 480p, 720p, 1080p; focus restoration and horizontal navigation');
+
+for (const options of [{pointer: false}, {}, ...['VIDAA', 'Hisense', 'HiSmartTV', 'SmartTV', 'Smart-TV', 'HbbTV', 'Vewd'].map(userAgent => ({pointer: true, userAgent}))]) {
+  const excluded = screen({}, 900, options);
+  assert(excluded.rails.every(rail => rail.parentNode.buttons.length === 0), 'TV and touch browsers never create desktop controls');
+  assert(excluded.rails.every(rail => !rail.handlers.scroll), 'excluded browsers receive no arrow handlers');
+}
+const desktop = screen({}, 900, {pointer: true});
+const row = desktop.rails[0];
+const [previous, next] = row.parentNode.buttons;
+assert.equal(next.getAttribute('aria-label'), 'Next titles in Continue watching');
+assert.equal(desktop.rails[1].parentNode.buttons[0].getAttribute('aria-label'), 'Previous titles in Season 1');
+assert.equal(previous.getAttribute('aria-disabled'), 'true');
+assert.equal(next.getAttribute('aria-disabled'), 'false');
+assert.equal(next.style.top, '50px');
+assert.equal(next.style.height, '190px');
+next.focus();
+const pageBeforeClick = desktop.window.pageYOffset;
+next.handlers.click();
+assert.equal(row.scrollLeft, 320, 'page scroll retains one thumbnail overlap');
+assert.equal(desktop.document.activeElement, next, 'paging retains button focus');
+assert.equal(desktop.window.pageYOffset, pageBeforeClick, 'paging does not scroll the page');
+assert.equal(desktop.rails[1].scrollLeft, 0, 'shelves scroll independently');
+for (let i = 0; i < 10; i++) next.handlers.click();
+assert.equal(row.scrollLeft, 1800, 'repeated clicks stop at the last title');
+assert.equal(next.getAttribute('aria-disabled'), 'true');
+assert.equal(next.tabIndex, -1);
+for (let i = 0; i < 10; i++) previous.handlers.click();
+assert.equal(row.scrollLeft, 0, 'previous stops at the start');
+row.scrollLeft = 500;
+row.handlers.scroll();
+assert.equal(previous.getAttribute('aria-disabled'), 'false', 'manual scrolling refreshes availability');
+row.scrollLeft = 0;
+row.clientWidth = row.scrollWidth;
+desktop.resize();
+assert.equal(previous.getAttribute('aria-disabled'), 'true');
+assert.equal(next.getAttribute('aria-disabled'), 'true', 'fitting rows hide both arrows after resize');
+const smooth = screen({}, 900, {pointer: true, smooth: true});
+const smoothRow = smooth.rails[0];
+const forward = smoothRow.parentNode.buttons[1];
+forward.handlers.click();
+forward.handlers.click();
+assert.equal(smoothRow.lastRequest.left, 640, 'rapid clicks accumulate before smooth scrolling finishes');
+assert.equal(smoothRow.lastRequest.behavior, 'smooth');
+smoothRow.scrollLeft = 640;
+smoothRow.handlers.scroll();
+smoothRow.scrollLeft = 100;
+smoothRow.handlers.wheel();
+forward.handlers.click();
+assert.equal(smoothRow.lastRequest.left, 420, 'manual input resets the queued destination');
+const reduced = screen({}, 900, {pointer: true, smooth: true, reducedMotion: true});
+reduced.rails[0].parentNode.buttons[1].handlers.click();
+assert.equal(reduced.rails[0].scrollLeft, 320, 'reduced motion uses immediate scrolling');
+assert.equal(reduced.rails[0].lastRequest, undefined);
+console.log('Desktop shelf arrows passed: TV exclusion, paging, focus, boundaries, resize, smooth scrolling and reduced motion');
