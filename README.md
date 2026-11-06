@@ -98,6 +98,8 @@ Desktop browsers with a mouse or trackpad show arrows over blurred panels when y
 
 Playback controls hide after three idle seconds while playing, even if a button had focus. Pause keeps them visible. Near an episode's end, a separate next-episode prompt appears; playback advances automatically at completion when another available episode exists. Progress is shared by the household, with no separate user profiles. Series in **Continue watching** stay out of **Not watched**. Every partially watched library thumbnail shows a red playback progress line along its bottom edge, including episode thumbnails; watched titles show a full red line. Resume badges stay in Continue watching.
 
+In **Library**, expand a series, then a season to see its episodes. Each episode row has **Mark as watched** (or **Mark as unwatched**) before its availability label; use it without opening the episode editor. Marking watched fills the red progress line in the TV library. Marking unwatched clears it and restarts playback from the beginning.
+
 Audio and subtitle selection appears when the browser exposes suitable native tracks. Subtitles start off for each video. External subtitle files are not imported.
 
 ### Discovery and trailers

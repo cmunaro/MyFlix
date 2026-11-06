@@ -7,7 +7,7 @@
       <div class="tile-picture">
         {% if item.poster %}<img src="{{ item.poster }}" alt="" loading="lazy">{% else %}<span class="tile-art" aria-hidden="true">{{ item.series or item.title }}</span>{% endif %}
         {% if continuing %}<span class="tile-logo" aria-hidden="true">M</span>
-        {% if item.watched %}<span class="tile-badge">✓ Watched</span>{% elif item.position > 0 %}<span class="tile-badge">Resume · {{ (item.position / 60)|int }} min</span>{% endif %}
+        {% if not item.watched and item.position > 0 %}<span class="tile-badge">Resume · {{ (item.position / 60)|int }} min</span>{% endif %}
         <span class="tile-play" aria-hidden="true">▶</span>{% endif %}
         {% if not item.discovery and (item.watched or (item.position > 0 and item.duration > 0)) %}<progress value="{{ 100 if item.watched else item.position }}" max="{{ 100 if item.watched else item.duration }}" aria-label="Playback progress"></progress>{% endif %}
       </div>

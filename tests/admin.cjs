@@ -76,7 +76,7 @@ function screen(tv = true) {
   };
   class XHR {
     constructor() { this.headers = {}; }
-    open(method, url) { this.method = method; this.action = url.split('/').pop(); }
+    open(method, url) { this.method = method; this.url = url; this.action = url.split('/').pop(); }
     setRequestHeader(key, value) { this.headers[key] = value; }
     send(body) { this.body = body && JSON.parse(body); pending.push(this); }
   }
@@ -96,6 +96,7 @@ function screen(tv = true) {
   }
   return {document, body, add, current, library, query, provider, search, refresh, form, key, location, pending, reply, intervals,
     downloads() { vm.runInNewContext(fs.readFileSync('myflix/static/downloads.js', 'utf8'), context); },
+    libraryScript() { vm.runInNewContext(fs.readFileSync('myflix/static/library.js', 'utf8'), context); },
     el(id) { return document.getElementById(id); }};
 }
 
@@ -118,13 +119,17 @@ const checkbox = ui.add(ui.body, 'input', {type: 'checkbox'});
 checkbox.focus(); ui.key(13); assert.equal(checkbox.checked, true); assert.equal(checkbox.clicks, 1, 'OK toggles once');
 const seriesGroup = ui.add(ui.body, 'details'); seriesGroup.open = true;
 const seriesSummary = ui.add(seriesGroup, 'summary');
-const episodeEditor = ui.add(seriesGroup, 'details'); episodeEditor.open = true;
+const seasonGroup = ui.add(seriesGroup, 'details'); seasonGroup.open = true;
+const seasonSummary = ui.add(seasonGroup, 'summary');
+const episodeEditor = ui.add(seasonGroup, 'details'); episodeEditor.open = true;
 const episodeSummary = ui.add(episodeEditor, 'summary');
 const episodeSave = ui.add(episodeEditor, 'button'); episodeSave.focus();
 ui.key(461); assert(!episodeEditor.open); assert(seriesGroup.open);
 assert.equal(ui.document.activeElement, episodeSummary, 'Back closes episode editor before series');
+ui.key(461); assert(!seasonGroup.open); assert(seriesGroup.open);
+assert.equal(ui.document.activeElement, seasonSummary, 'second Back returns to season summary');
 ui.key(461); assert(!seriesGroup.open);
-assert.equal(ui.document.activeElement, seriesSummary, 'second Back returns to series summary');
+assert.equal(ui.document.activeElement, seriesSummary, 'third Back returns to series summary');
 const desktop = screen(false); desktop.query.focus();
 assert(!desktop.key(37).prevented); assert(!desktop.key(13).prevented, 'desktop input behavior remains native');
 const columns = screen(); columns.query.focus(); columns.key(40);
@@ -233,3 +238,48 @@ assert(errors.el('queue-message').textContent.includes('Queued 2 priority retrie
 retryAll.click(); errors.reply('retry-failed', {error: 'Connection uncertain. Check queue.'}, 502);
 assert(!errors.pending.some(xhr => xhr.action === 'retry-failed'), 'failed bulk request is not automatically retried');
 console.log('Admin behavior passed: remote fields and Back, native desktop inputs, current downloads and episode failures, refresh focus, episode selection, CSRF, and mutation guards');
+
+const catalog = screen();
+const watchStatus = catalog.add(catalog.body, 'p', {id: 'library-watch-status'});
+const show = catalog.add(catalog.body, 'details'); show.open = true;
+const season = catalog.add(show, 'details'); season.open = true;
+const episode = catalog.add(season, 'details'); episode.open = false;
+const episodeHeading = catalog.add(episode, 'summary');
+const watch = catalog.add(episodeHeading, 'button', {
+  'data-watch-url': '/admin/media/7/watched', 'data-watched': '0', 'data-episode-name': 'Show S1 E1'
+});
+watch.textContent = 'Mark as watched';
+const availability = catalog.add(episodeHeading, 'span', {'data-watch-state': '', 'data-availability': 'Ready'});
+availability.textContent = 'Ready';
+catalog.libraryScript();
+watch.focus();
+let prevented = false, stopped = false;
+watch.onclick({preventDefault() { prevented = true; }, stopPropagation() { stopped = true; }});
+watch.click();
+assert(prevented && stopped, 'watch action cancels summary activation');
+assert.equal(catalog.pending.length, 1, 'repeated activation submits once');
+assert.equal(catalog.pending[0].url, '/admin/media/7/watched');
+assert.equal(catalog.pending[0].headers['X-CSRF-Token'], 'csrf-token');
+assert.equal(catalog.pending[0].body.watched, true);
+assert.equal(availability.textContent, 'Ready', 'state changes only after confirmation');
+catalog.reply('watched', {watched: 1});
+assert.equal(watch.textContent, 'Mark as unwatched');
+assert.equal(availability.textContent, 'Watched · Ready');
+assert(!episode.open && season.open && show.open, 'saving preserves expansion state');
+assert.equal(catalog.document.activeElement, watch, 'saving preserves button focus');
+assert.match(watchStatus.textContent, /Show S1 E1 marked as watched/);
+watch.click();
+assert.equal(catalog.pending[0].body.watched, false);
+catalog.reply('watched', {error: 'Failed'}, 500);
+assert.equal(watch.textContent, 'Mark as unwatched', 'failed save preserves current state');
+assert.equal(availability.textContent, 'Watched · Ready');
+assert.equal(catalog.pending.length, 0, 'failed saves are not automatically retried');
+assert.match(watchStatus.textContent, /Could not save/);
+watch.click(); catalog.reply('watched', {watched: 0});
+assert.equal(watch.textContent, 'Mark as watched');
+assert.equal(availability.textContent, 'Ready');
+watch.click(); catalog.pending.pop().ontimeout();
+assert(!watch.hasAttribute('aria-disabled'), 'timeouts release the action for another attempt');
+assert.match(watchStatus.textContent, /Could not save/);
+assert(!episode.open && season.open && show.open);
+console.log('Library passed: nested season Back, collapsed episode watch action, focus preservation, state toggle, CSRF, duplicate and failure handling');

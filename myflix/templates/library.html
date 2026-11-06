@@ -3,13 +3,14 @@
   <div class="panel-heading"><h2 id="catalog-heading">{{ 'Watched and removed' if section == 'removed' else 'Your collection' }}</h2><span class="section-tag">{{ items|length }} VIDEOS</span></div>
   <form class="catalog-search" method="get"><input type="hidden" name="section" value="{{ section }}"><label for="catalog-query">Find in your library<input id="catalog-query" name="q" value="{{ query }}" placeholder="Film, series or episode title" maxlength="200"></label><button class="secondary">Find</button>{% if query %}<a class="button secondary" href="{{ url_for('admin',section=section) }}">Clear</a>{% endif %}</form>
   <p class="panel-note">{{ 'Watch history and catalog details stay saved after files are removed. Missing files are detected by library scans.' if section == 'removed' else 'Open a series to manage its seasons and episodes. Removing files retains history; hiding titles keeps them on disk.' }}</p>
+  <p id="library-watch-status" class="panel-note" role="status" aria-live="polite"></p>
   {% for series,seasons in groups.items() %}
   <details class="catalog-series">
     <summary><span class="catalog-title">{{ series }}</span><span>{{ seasons|length }} seasons</span><span aria-hidden="true">⌄</span></summary>
     {% for season,episodes in seasons.items() %}
-    <section class="catalog-season"><h3>Season {{ season }}</h3>{{ season_controls(series,season,rules.get((series,season))) }}
+    <details class="catalog-season"><summary><span>Season {{ season }}</span><span>{{ episodes|length }} {{ 'episode' if episodes|length == 1 else 'episodes' }}</span><span aria-hidden="true">⌄</span></summary>{{ season_controls(series,season,rules.get((series,season))) }}
       {% for item in episodes %}{{ media_editor(item,subscriptions,section == 'removed') }}{% endfor %}
-    </section>
+    </details>
     {% endfor %}
   </details>
   {% endfor %}

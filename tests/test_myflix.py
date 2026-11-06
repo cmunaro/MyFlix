@@ -94,6 +94,49 @@ class MyFlixTest(unittest.TestCase):
         # Navigation beacon uses form encoding rather than JSON.
         self.assertEqual(self.post(path, {"position": "30", "duration": "100"}).status_code, 200)
 
+    def test_library_seasons_and_collapsed_episode_watch_action(self):
+        self.configure()
+        for name in ("Show.S01E01.Start.mp4", "Show.S01E02.Next.mp4", "Show.S02E01.Return.mp4"):
+            self.video(name)
+        scan(self.database)
+        media_id = self.item()["id"]
+        url = f"/admin/media/{media_id}/watched"
+        page = self.client.get("/admin?section=library").data.decode()
+        self.assertEqual(page.count('<details class="catalog-season">'), 2)
+        self.assertIn('<span>Season 1</span><span>2 episodes</span>', page)
+        self.assertIn('<span>Season 2</span><span>1 episode</span>', page)
+        summaries = re.findall(r'<details class="catalog-item">\s*<summary>(.*?)</summary>', page, re.S)
+        self.assertEqual(len(summaries), 3)
+        for summary in summaries:
+            self.assertLess(summary.index('data-watch-url='), summary.index('data-watch-state'))
+            self.assertIn('Mark as watched</button>', summary)
+        for tv_url in ("/", f"/series/{media_id}", f"/watch/{media_id}"):
+            self.assertNotIn('Episode options', self.client.get(tv_url).data.decode())
+        self.assertEqual(self.post(url, body={"watched": True}).json,
+                         {"position": 0, "duration": 0, "watched": 1})
+        self.post(f"/api/progress/{media_id}", body={"position": 30, "duration": 100})
+        self.assertEqual(self.post(url, body={"watched": True}).json,
+                         {"position": 30, "duration": 100, "watched": 1})
+        page = self.client.get(f"/series/{media_id}").data.decode()
+        self.assertIn('value="100" max="100"', page)
+        self.assertNotIn('class="tile-badge"', page)
+        self.assertIn('Mark as unwatched</button>', self.client.get("/admin?section=library").data.decode())
+        self.assertEqual(self.post(url, body={"watched": False}).json,
+                         {"position": 0, "duration": 100, "watched": 0})
+        self.assertNotIn('<progress ', self.client.get(f"/series/{media_id}").data.decode())
+        for body in ({}, {"watched": 1}, {"watched": "false"}, [], {"watched": None}):
+            self.assertEqual(self.post(url, body=body).status_code, 400)
+        self.assertEqual(self.client.post(url, json={"watched": True}).status_code, 403)
+        # Library management also covers hidden and missing episodes.
+        with connect(self.database) as db:
+            db.execute("UPDATE media SET hidden=1,available=0 WHERE id=?", (media_id,))
+        self.assertEqual(self.post(url, body={"watched": True}).status_code, 200)
+        self.assertIn('Mark as unwatched</button>', self.client.get("/admin?section=removed").data.decode())
+        self.assertEqual(self.post("/admin/media/99999/watched", body={"watched": True}).status_code, 404)
+        (self.base / "other-library").mkdir()
+        self.assertEqual(self.post("/admin/settings", {"videos_path": str(self.base / "other-library")}).status_code, 302)
+        self.assertEqual(self.post(url, body={"watched": True}).status_code, 404)
+
     def test_edit_and_progress_survive_missing_and_rescan(self):
         self.configure()
         file = self.video()
@@ -404,7 +447,8 @@ class MyFlixTest(unittest.TestCase):
         poster = self.library / "Show" / "poster.jpg"
         poster.write_bytes(b"local-jpeg-fixture")
         scan(self.database)
-        item = self.item()
+        with connect(self.database) as db:
+            item = dict(db.execute("SELECT * FROM media WHERE episode=1").fetchone())
         home = self.client.get("/").data
         self.assertIn(b'data-rail', home)
         self.assertNotIn(b'<footer>', home)

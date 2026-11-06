@@ -99,3 +99,10 @@
 .lookup-status progress[hidden]{display:none}
 .lookup-status p{margin:8px 0}
 #following-connection:empty{display:none}
+
+.catalog-season>summary{display:flex;align-items:center;justify-content:space-between;padding:18px 10px;cursor:pointer;font-size:22px;font-weight:700;list-style:none}
+.catalog-season>summary::-webkit-details-marker{display:none}
+.catalog-season>summary>span+span{margin-left:20px;color:#aaa;font-size:16px;font-weight:normal}
+.catalog-item summary .catalog-watch{flex:none;margin-right:18px;padding:10px 14px;font-size:16px}
+.catalog-watch[aria-disabled="true"]{opacity:.6}
+@media(max-width:650px){.catalog-item summary{flex-wrap:wrap}.catalog-item .catalog-title{flex-basis:100%;margin-bottom:14px}.catalog-item summary .catalog-watch{font-size:14px;margin-right:10px}}

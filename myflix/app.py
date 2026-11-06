@@ -298,6 +298,28 @@ def create_app(config=None):
                 (media_id, position, duration, complete, datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S.%f")))
         return jsonify(ok=True)
 
+    @app.post("/admin/media/<int:media_id>/watched")
+    def mark_watched(media_id):
+        body = request.get_json(silent=True)
+        if not isinstance(body, dict) or not isinstance(body.get("watched"), bool):
+            abort(400)
+        watched = body["watched"]
+        with connect(database) as db:
+            item = db.execute("SELECT id FROM media WHERE id=? AND root=?",
+                              (media_id, settings(db)["videos_path"])).fetchone()
+            if not item:
+                abort(404)
+            # Marking watched preserves the real playback time and known duration.
+            # Marking unwatched starts the episode afresh.
+            db.execute("""INSERT INTO progress(media_id,position,duration,watched,updated_at)
+                VALUES(?,0,0,?,?) ON CONFLICT(media_id) DO UPDATE SET
+                position=CASE WHEN excluded.watched THEN progress.position ELSE 0 END,
+                watched=excluded.watched,updated_at=excluded.updated_at""",
+                (media_id, watched, datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S.%f")))
+            row = db.execute("SELECT position,duration,watched FROM progress WHERE media_id=?",
+                             (media_id,)).fetchone()
+        return jsonify(dict(row))
+
     @app.get("/admin")
     def admin():
         section = request.args.get("section", "downloads")
