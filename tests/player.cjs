@@ -17,6 +17,7 @@ function screen(blockFirstPlay = false, options = {}) {
       hasAttribute(key) { return Object.hasOwn(attrs, key); },
       removeAttribute(key) { delete attrs[key]; },
       contains(target) { while (target) { if (target === this) return true; target = target.parentNode; } return false; },
+      getBoundingClientRect() { return {left: 100, width: 800}; },
       focus() { document.activeElement = this; document.emit('focusin', {target: this}); },
       click() { if (!this.disabled && this.onclick) this.onclick({preventDefault() {}}); },
       querySelector(selector) { return symbols[selector] ||= {hidden: false}; }
@@ -32,6 +33,7 @@ function screen(blockFirstPlay = false, options = {}) {
   const center = element('center-play', shell);
   element('back', header);
   element('player-status', shell);
+  element('player-loading', shell).hidden = true;
   for (const id of ['toggle-play', 'rewind', 'forward', 'mute', 'track-settings', 'next-episode', 'fullscreen', 'timeline', 'remaining-time', 'playback-progress']) element(id, overlay);
   const trackPanel = element('track-panel', shell); trackPanel.hidden = true;
   const audioGroup = element('audio-track-group', trackPanel), subtitleGroup = element('subtitle-track-group', trackPanel);
@@ -66,6 +68,9 @@ function screen(blockFirstPlay = false, options = {}) {
   }
   if (options.fullscreenDenied) { shell.requestFullscreen = () => { fullscreenRequests.push('denied'); throw Error('Denied'); }; }
   Object.assign(player, {paused: true, currentTime: 0, duration: 1000, controls: true, muted: false, playCalls: 0, readyState: options.cachedMetadata ? 1 : 0, loadCalls: 0});
+  const buffered = options.buffered || [[0, 200]];
+  player.buffered = {length: buffered.length, start: i => buffered[i][0], end: i => buffered[i][1]};
+  player.seekable = {length: 1, start: () => 0, end: () => 200};
   function trackList(items) {
     if (!items) return undefined;
     const list = element('track-list-' + ++created);
@@ -272,6 +277,126 @@ desktop.key(39);
 assert.equal(desktop.fullscreenRequests.length, 0, 'desktop playback does not enter fullscreen automatically');
 desktop.tick(3000); desktop.document.emit('mousemove');
 assert(desktop.classes.has('controls-visible'), 'desktop mouse interaction still reveals controls');
+
+const mouseSeek = screen(false, {cachedMetadata: true, nextId: ''});
+const seekBar = mouseSeek.elements.timeline;
+function mouseDown(ui, clientX, extra = {}) {
+  let prevented = false;
+  ui.elements.timeline.emit('mousedown', {clientX, button: 0, detail: 1,
+    preventDefault() { prevented = true; }, ...extra});
+  return prevented;
+}
+function clickTimeline(clientX, extra = {}) {
+  const prevented = mouseDown(mouseSeek, clientX, extra);
+  mouseSeek.document.emit('mouseup', {clientX, button: 0, ...extra});
+  // Firefox can consume click entirely; the seek must already be complete.
+  return prevented;
+}
+assert.equal(clickTimeline(300), true, 'mouse-down cancels the native small-step range action');
+assert.equal(mouseSeek.player.currentTime, 250, 'desktop track clicks jump directly to the chosen fraction');
+assert.equal(seekBar.value, 250);
+assert.equal(mouseSeek.elements['playback-progress'].value, 250, 'progress immediately reflects the seek');
+assert.equal(mouseSeek.requests.at(-1).position, 250, 'clicked position is saved');
+assert.equal(mouseSeek.player.paused, false, 'seeking preserves active playback');
+mouseSeek.tick(3000);
+assert(!mouseSeek.classes.has('controls-visible'), 'controls still hide after a mouse seek');
+mouseSeek.player.pause();
+clickTimeline(700);
+assert.equal(mouseSeek.player.currentTime, 750, 'a paused video can also seek');
+assert.equal(mouseSeek.player.paused, true, 'clicking the timeline does not resume a paused video');
+clickTimeline(0);
+assert.equal(mouseSeek.player.currentTime, 0, 'timeline coordinates clamp at the start');
+clickTimeline(1000);
+assert.equal(mouseSeek.player.currentTime, 1000, 'timeline coordinates clamp at the end');
+clickTimeline(300, {button: 2});
+seekBar.emit('click', {clientX: 300, button: 0, detail: 0});
+assert.equal(mouseSeek.player.currentTime, 1000, 'secondary and keyboard-generated clicks do not seek');
+mouseSeek.player.duration = Infinity;
+clickTimeline(300);
+assert.equal(mouseSeek.player.currentTime, 1000, 'unknown duration cannot produce an invalid seek');
+mouseSeek.player.duration = 1000;
+seekBar.getBoundingClientRect = () => ({left: 100, width: 0});
+clickTimeline(300);
+assert.equal(mouseSeek.player.currentTime, 1000, 'a hidden or collapsed timeline is ignored');
+const beforeMetadata = screen();
+assert.equal(mouseDown(beforeMetadata, 300), false);
+assert.equal(beforeMetadata.player.currentTime, 0, 'clicks before metadata cannot seek');
+const beforeTVClick = tv.player.currentTime;
+assert.equal(mouseDown(tv, 300), false);
+assert.equal(tv.player.currentTime, beforeTVClick, 'TV playback receives no desktop click-to-seek handler');
+const unbuffered = screen(false, {cachedMetadata: true});
+const waitingOverlay = unbuffered.elements['player-loading'];
+assert.equal(mouseDown(unbuffered, 700), true);
+unbuffered.document.emit('mouseup', {clientX: 700});
+assert.equal(unbuffered.player.currentTime, 750, 'seek goes beyond both the buffered and reported seekable ranges');
+assert.equal(unbuffered.elements['playback-progress'].value, 750, 'unbuffered target is shown immediately');
+assert.equal(waitingOverlay.hidden, false, 'unbuffered seek immediately shows Loading');
+assert.equal(unbuffered.player.getAttribute('aria-busy'), 'true');
+unbuffered.player.seeking = true;
+unbuffered.player.emit('seeking');
+unbuffered.tick(3000);
+assert.equal(waitingOverlay.hidden, false, 'loading survives the controls idle timeout');
+assert.equal(unbuffered.elements.timeline.disabled, false, 'metadata-only readiness allows another seek during buffering');
+mouseDown(unbuffered, 820);
+unbuffered.document.emit('mouseup', {clientX: 820});
+assert.equal(unbuffered.player.currentTime, 900, 'a newer unbuffered target replaces the previous one');
+unbuffered.player.readyState = 2;
+unbuffered.player.emit('canplay');
+assert.equal(waitingOverlay.hidden, false, 'an earlier readiness event cannot dismiss a seek still in progress');
+unbuffered.player.seeking = false;
+unbuffered.player.emit('seeked');
+assert.equal(waitingOverlay.hidden, true, 'the overlay clears when the requested frame is ready');
+assert.equal(unbuffered.player.getAttribute('aria-busy'), 'false');
+assert.equal(unbuffered.player.paused, false, 'buffering retains the playing state');
+unbuffered.player.emit('waiting');
+assert.equal(waitingOverlay.hidden, false, 'a playback buffer underrun also shows loading');
+unbuffered.player.emit('playing');
+assert.equal(waitingOverlay.hidden, true);
+unbuffered.player.emit('waiting');
+unbuffered.player.pause();
+assert.equal(waitingOverlay.hidden, true, 'pausing an ordinary buffer underrun clears loading');
+unbuffered.elements.timeline.value = 600;
+unbuffered.elements.timeline.oninput();
+assert.equal(unbuffered.player.currentTime, 600, 'dragging also seeks outside buffered data');
+assert.equal(waitingOverlay.hidden, false, 'a paused seek shows loading until its frame arrives');
+unbuffered.player.emit('seeked');
+assert.equal(waitingOverlay.hidden, true);
+assert.equal(unbuffered.player.paused, true, 'a paused seek does not start playback');
+unbuffered.elements.timeline.value = 100;
+unbuffered.elements.timeline.oninput();
+assert.equal(waitingOverlay.hidden, true, 'already buffered seeks do not leave a loading overlay');
+unbuffered.elements.forward.click();
+assert.equal(waitingOverlay.hidden, true, 'buffered remote seeks use the same path');
+unbuffered.elements.timeline.value = 700;
+unbuffered.elements.timeline.oninput();
+unbuffered.player.emit('error');
+assert.equal(waitingOverlay.hidden, true, 'playback failures replace loading with the error message');
+assert.equal(unbuffered.elements['player-status'].hidden, false);
+unbuffered.elements.timeline.oninput();
+unbuffered.player.emit('emptied');
+assert.equal(waitingOverlay.hidden, true, 'changing the source clears the old buffering state');
+
+const dragSeek = screen(false, {cachedMetadata: true});
+assert.equal(mouseDown(dragSeek, 300), true);
+assert.equal(dragSeek.player.currentTime, 250, 'the mouse-down position is applied before any native input');
+dragSeek.document.emit('mousemove', {clientX: 580, preventDefault() {}});
+assert.equal(dragSeek.player.currentTime, 600, 'dragging is mapped directly even without native input events');
+dragSeek.tick(3000);
+assert(dragSeek.classes.has('controls-visible'), 'dragging keeps controls visible');
+dragSeek.document.emit('mouseup', {clientX: 660});
+assert.equal(dragSeek.player.currentTime, 700, 'release uses the final coordinate even outside the thumb');
+assert.equal(dragSeek.requests.at(-1).position, 700, 'dragged position is saved');
+dragSeek.document.emit('mousemove', {clientX: 300, preventDefault() {}});
+assert.equal(dragSeek.player.currentTime, 700, 'moving after release no longer seeks');
+dragSeek.tick(3000);
+assert(!dragSeek.classes.has('controls-visible'), 'controls hide again after dragging');
+const touchSeek = screen(false, {cachedMetadata: true});
+touchSeek.elements.timeline.emit('touchstart');
+touchSeek.elements.timeline.value = 600;
+touchSeek.elements.timeline.oninput();
+touchSeek.document.emit('touchend');
+assert.equal(touchSeek.player.currentTime, 600, 'touch input still uses the native range value');
+assert.equal(touchSeek.requests.at(-1).position, 600);
 
 assert(ui.elements['track-settings'].hidden, 'unsupported native track APIs do not expose a broken chooser');
 const singleAudio = screen(false, {cachedMetadata: true, audioTracks: [{language: 'en', enabled: true}], textTracks: []});

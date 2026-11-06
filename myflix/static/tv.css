@@ -46,6 +46,10 @@
 .player-icon svg, .player-icon svg * { pointer-events: none; }
 .center-play { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); width: 100px; height: 100px; padding: 27px; border: 2px solid #ffffffa0; border-radius: 50%; background: #0006; z-index: 2; }
 .center-play:hover { background: #000a; }
+.player-loading { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); z-index: 4; padding: 18px 24px; border-radius: 8px; background: #171717e8; text-align: center; pointer-events: none; }
+.player-loading span { display: block; width: 38px; height: 38px; margin: 0 auto 12px; border: 4px solid #ffffff40; border-top-color: #e50914; border-radius: 50%; animation: player-loading-spin .8s linear infinite; }
+@keyframes player-loading-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .player-loading span { animation: none; } }
 .watch-controls { position: absolute; right: 0; bottom: 0; left: 0; z-index: 3; padding: 70px 3% 22px; background: linear-gradient(transparent, #000b 60%, #000d); }
 .timeline-row { display: flex; align-items: center; margin-bottom: 8px; }
 .timeline-track { flex: 1; position: relative; height: 32px; }

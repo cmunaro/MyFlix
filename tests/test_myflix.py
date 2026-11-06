@@ -53,6 +53,20 @@ class MyFlixTest(unittest.TestCase):
         with connect(self.database) as db:
             return dict(db.execute("SELECT * FROM media ORDER BY id LIMIT 1").fetchone())
 
+    def test_media_advertises_ranges_and_serves_later_bytes(self):
+        self.configure()
+        self.video()
+        self.post("/admin/scan")
+        url = f'/media/{self.item()["id"]}'
+        with self.client.get(url) as response:
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.headers["Accept-Ranges"], "bytes")
+        with self.client.get(url, headers={"Range": "bytes=7-"}) as response:
+            self.assertEqual(response.status_code, 206)
+            self.assertEqual(response.headers["Accept-Ranges"], "bytes")
+            self.assertEqual(response.headers["Content-Range"], "bytes 7-9/10")
+            self.assertEqual(response.data, b"789")
+
     def test_import_browse_range_resume_and_watch(self):
         self.configure()
         self.video("The.Show.S01E02.Arrival.mp4")

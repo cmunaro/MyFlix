@@ -4,6 +4,7 @@
   var shell = document.getElementById('player-shell');
   var platform = window.MyFlixTV;
   var status = document.getElementById('player-status');
+  var loading = document.getElementById('player-loading');
   var toggle = document.getElementById('toggle-play');
   var center = document.getElementById('center-play');
   var timeline = document.getElementById('timeline');
@@ -32,7 +33,7 @@
   var mediaId = player.getAttribute('data-id');
   var initialized = false, lastSave = 0, pendingSave = null;
   var switchingEpisode = false, autoAdvanceAttempted = false;
-  var visible = true, scrubbing = false, hideTimer, noticeKind = '';
+  var visible = true, scrubbing = false, mouseScrubbing = false, hideTimer, noticeKind = '';
   // Keep native controls as the no-JavaScript fallback. Never display two UIs.
   player.controls = false;
   document.body.classList.add('custom-player');
@@ -193,8 +194,31 @@
     }
   }
   function togglePlay() { if (player.paused) { play(); } else { player.pause(); } }
+  function buffering(active) {
+    loading.hidden = !active;
+    player.setAttribute('aria-busy', active ? 'true' : 'false');
+  }
+  function bufferedAt(position) {
+    var ranges = player.buffered, i;
+    for (i = 0; ranges && i < ranges.length; i += 1) {
+      if (position >= ranges.start(i) && position < ranges.end(i)) { return true; }
+    }
+    return false;
+  }
+  function seekTo(position) {
+    if (!canSeek() || !isFinite(position)) { return; }
+    position = Math.max(0, Math.min(player.duration, position));
+    // Assign the requested time even outside buffered/seekable ranges. The
+    // native media loader requests the relevant bytes from /media using Range.
+    player.currentTime = position;
+    buffering(!bufferedAt(position));
+    render();
+  }
+  function frameReady() {
+    if (!player.seeking && player.readyState >= 2) { buffering(false); }
+  }
   function seek(offset) {
-    if (canSeek()) { player.currentTime = Math.max(0, Math.min(player.duration, player.currentTime + offset)); render(); }
+    seekTo(player.currentTime + offset);
     showControls();
   }
   function save(explicit) {
@@ -226,16 +250,21 @@
     if (initialized || !canSeek()) { return; }
     initialized = true;
     var resume = parseFloat(player.getAttribute('data-position')) || 0;
-    if (resume > 0 && resume < player.duration - 5) { player.currentTime = resume; }
+    if (resume > 0 && resume < player.duration - 5) { seekTo(resume); }
     render();
     play(); // A blocked autoplay leaves the central Play action available.
   }
   player.addEventListener('loadedmetadata', function () { initializeMedia(); bindTrackEvents(); });
-  player.addEventListener('emptied', function () { subtitlesChosen = false; closeTracks(false); trackButton.hidden = true; });
+  player.addEventListener('emptied', function () { buffering(false); subtitlesChosen = false; closeTracks(false); trackButton.hidden = true; });
+  player.addEventListener('seeking', function () { buffering(player.readyState < 2 || !bufferedAt(player.currentTime)); });
+  player.addEventListener('waiting', function () { if (!player.paused && !player.ended) { buffering(true); } });
+  player.addEventListener('stalled', function () { if (!player.paused && player.readyState < 3) { buffering(true); } });
+  ['seeked', 'canplay', 'loadeddata', 'playing'].forEach(function (event) { player.addEventListener(event, frameReady); });
   player.addEventListener('durationchange', function () { initializeMedia(); render(); });
   player.addEventListener('play', function () { document.body.classList.add('playing'); if (noticeKind !== 'save') { notify(''); } render(); showControls(); });
-  player.addEventListener('pause', function () { document.body.classList.remove('playing'); render(); showControls(); save(); });
+  player.addEventListener('pause', function () { if (!player.seeking) { buffering(false); } document.body.classList.remove('playing'); render(); showControls(); save(); });
   player.addEventListener('ended', function () {
+    buffering(false);
     render(); showControls(); save(true);
     if (nextId && !autoAdvanceAttempted) { autoAdvanceAttempted = true; advanceEpisode(); }
   });
@@ -244,7 +273,7 @@
     if (Date.now() - lastSave > 10000) { lastSave = Date.now(); save(); }
   });
   player.addEventListener('volumechange', render);
-  player.addEventListener('error', function () { notify('This file could not play. Check the file and TV codec support. MP4 with H.264 video and AAC audio is recommended; MyFlix does not transcode.', 'playback'); });
+  player.addEventListener('error', function () { buffering(false); notify('This file could not play. Check the file and TV codec support. MP4 with H.264 video and AAC audio is recommended; MyFlix does not transcode.', 'playback'); });
   toggle.onclick = center.onclick = togglePlay;
   player.onclick = togglePlay;
   rewind.onclick = function () { seek(-10); };
@@ -301,14 +330,41 @@
   nextLink.onclick = nextPrompt.onclick = advanceEpisode;
   mute.onclick = function () { player.muted = !player.muted; render(); showControls(); };
   timeline.oninput = function () {
-    if (canSeek()) { player.currentTime = Number(timeline.value); render(); }
+    seekTo(Number(timeline.value));
     showControls();
   };
+  function seekFromMouse(event) {
+    if (!canSeek() || !isFinite(event.clientX)) { return false; }
+    var bounds = timeline.getBoundingClientRect();
+    if (bounds.width <= 0) { return false; }
+    var fraction = Math.max(0, Math.min(1, (event.clientX - bounds.left) / bounds.width));
+    seekTo(fraction * player.duration);
+    showControls();
+    return true;
+  }
+  if (!platform.isTV) {
+    // Own the complete mouse gesture. Firefox's native range track can step
+    // on mouse-down and consume the later click, undoing click-only seeking.
+    timeline.addEventListener('mousedown', function (event) {
+      if (event.button !== 0 || !seekFromMouse(event)) { return; }
+      event.preventDefault();
+      mouseScrubbing = true;
+      beginScrub();
+      timeline.focus();
+    });
+    document.addEventListener('mousemove', function (event) {
+      if (mouseScrubbing) { event.preventDefault(); seekFromMouse(event); }
+    });
+  } else {
+    timeline.addEventListener('mousedown', beginScrub);
+  }
   function beginScrub() { scrubbing = true; showControls(); }
   function endScrub() { if (scrubbing) { scrubbing = false; render(); showControls(); save(); } }
-  timeline.addEventListener('mousedown', beginScrub);
   timeline.addEventListener('touchstart', beginScrub);
-  document.addEventListener('mouseup', endScrub);
+  document.addEventListener('mouseup', function (event) {
+    if (mouseScrubbing) { seekFromMouse(event); mouseScrubbing = false; }
+    endScrub();
+  });
   document.addEventListener('touchend', endScrub);
   timeline.addEventListener('change', endScrub);
   function fullscreen() {

@@ -16,6 +16,7 @@ from .db import connect, initialize, settings
 from .discovery import DiscoveryCache
 from .engine_jobs import validate_limits
 from .monitoring import SeriesMonitor, episode_status, follow, lookup_status
+from .matroska import HeaderOverlay, seekable_header
 from .vibravid import VibraVid, VibraVidError
 
 
@@ -256,7 +257,17 @@ def create_app(config=None):
             path = media_path(item["root"], item["path"])
         except (OSError, ValueError):
             abort(404, "Video file is unavailable. Ask the administrator to scan the library.")
-        return send_file(path, conditional=True)
+        header = seekable_header(path)
+        etag = True
+        if header:
+            stat = path.stat()
+            etag = f"{stat.st_mtime_ns}-{stat.st_size}-seek-index-1"
+        response = send_file(path, conditional=True, etag=etag)
+        if header and response.status_code in (200, 206):
+            offset = response.content_range.start if response.status_code == 206 else 0
+            response.response = HeaderOverlay(response.response, header, offset)
+        response.headers["Accept-Ranges"] = "bytes"
+        return response
 
     @app.post("/api/progress/<int:media_id>")
     def progress(media_id):

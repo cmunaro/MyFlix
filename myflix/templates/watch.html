@@ -2,7 +2,7 @@
 {% block body_class %}tv-player controls-visible{% endblock %}
 {% block header %}{% endblock %}
 {% block title %}{{ item.title }} · MyFlix{% endblock %}
-{% block scripts %}<script src="{{ url_for('static', filename='player.js') }}" defer></script>{% endblock %}
+{% block scripts %}<script src="{{ url_for('static', filename='player.js', v='mouse-seek-3') }}" defer></script>{% endblock %}
 {% macro icon(name) -%}
 <svg viewBox="0 0 32 32" aria-hidden="true" focusable="false">
 {% if name == 'play' %}<path d="M10 5v22l18-11z"/>
@@ -26,6 +26,7 @@
   </header>
   <button id="center-play" class="center-play" data-player-overlay aria-label="Play" title="Play">{{ icon('play') }}</button>
   <p id="player-status" class="player-message" role="status" aria-live="polite" hidden></p>
+  <div id="player-loading" class="player-loading" role="status" aria-live="polite" hidden><span aria-hidden="true"></span>Loading…</div>
   <div class="watch-controls" data-player-overlay role="group" aria-label="Playback controls">
     <div class="timeline-row"><div class="timeline-track"><progress id="playback-progress" value="0" max="1" aria-hidden="true"></progress><input id="timeline" type="range" min="0" max="0" step="1" value="0" aria-label="Seek video" disabled></div><span id="remaining-time" aria-label="Time remaining">0:00</span></div>
     <div class="player-actions">
