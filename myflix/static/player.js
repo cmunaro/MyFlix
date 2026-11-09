@@ -376,6 +376,19 @@
     } else { unavailable(); }
   }
   document.getElementById('fullscreen').onclick = fullscreen;
+  if (!platform.isTV) {
+    var clickTimer;
+    // Wait for a possible double-click before changing playback.
+    player.onclick = function () {
+      window.clearTimeout(clickTimer);
+      clickTimer = window.setTimeout(togglePlay, 300);
+    };
+    player.addEventListener('dblclick', function (event) {
+      event.preventDefault();
+      window.clearTimeout(clickTimer);
+      fullscreen();
+    });
+  }
   function fullscreenChanged() { label(document.getElementById('fullscreen'), platform.fullscreenElement() ? 'Exit fullscreen' : 'Fullscreen'); showControls(); }
   document.addEventListener('fullscreenchange', fullscreenChanged);
   document.addEventListener('webkitfullscreenchange', fullscreenChanged);

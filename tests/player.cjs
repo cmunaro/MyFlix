@@ -174,6 +174,31 @@ ui.key(27);
 assert(!classes.has('controls-visible'), 'Back dismisses the overlay before leaving');
 ui.key(27);
 assert.equal(ui.location.href, '/');
+const doubleClickDesktop = screen(false, {cachedMetadata: true});
+function doubleClickVideo(ui) {
+  ui.player.click();
+  ui.tick(100);
+  ui.player.click();
+  ui.player.emit('dblclick', {preventDefault() {}});
+  ui.tick(300);
+}
+doubleClickVideo(doubleClickDesktop);
+assert.equal(doubleClickDesktop.document.fullscreenElement, doubleClickDesktop.elements['player-shell'], 'doubleClickDesktop double-click enters fullscreen with the overlay');
+assert.equal(doubleClickDesktop.player.paused, false, 'double-click does not pause playback');
+assert.equal(doubleClickDesktop.player.playCalls, 1, 'double-click does not restart playback');
+assert.equal(doubleClickDesktop.requests.length, 0, 'double-click does not trigger a pause progress save');
+doubleClickVideo(doubleClickDesktop);
+assert.equal(doubleClickDesktop.document.fullscreenElement, null, 'doubleClickDesktop double-click exits fullscreen');
+doubleClickDesktop.player.click();
+doubleClickDesktop.tick(300);
+assert.equal(doubleClickDesktop.player.paused, true, 'doubleClickDesktop single-click still pauses');
+doubleClickVideo(doubleClickDesktop);
+assert.equal(doubleClickDesktop.document.fullscreenElement, doubleClickDesktop.elements['player-shell']);
+assert.equal(doubleClickDesktop.player.paused, true, 'double-click preserves paused playback');
+doubleClickDesktop.player.click();
+doubleClickDesktop.tick(300);
+assert.equal(doubleClickDesktop.player.paused, false, 'doubleClickDesktop single-click still resumes');
+
 const blocked = screen(true);
 blocked.player.emit('loadedmetadata');
 assert.equal(blocked.player.paused, true, 'blocked autoplay remains paused');
