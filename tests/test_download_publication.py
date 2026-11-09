@@ -77,7 +77,7 @@ class DownloadPublicationTest(unittest.TestCase):
             self.assertEqual(row[0], 1200, 'timestamp must be committed before the file is visible')
             return _rename_no_replace(temporary, target)
 
-        with patch.object(CreditsCache, 'tools', return_value=('f', 'p', 't')), \
+        with patch.object(CreditsCache, 'tools', return_value=('f', 'p')), \
                 patch('myflix.credits.analyze', side_effect=detect) as detector, \
                 patch('deploy.vibravid_publish._rename_no_replace', side_effect=rename):
             # Finalization already holds the processing slot; publication must
@@ -96,9 +96,9 @@ class DownloadPublicationTest(unittest.TestCase):
             self.assertEqual(detector.call_count, 1, 'background indexing must reuse the pre-publication result')
 
     def test_inconclusive_and_failed_detection_still_publish_with_fallback(self):
-        for error in [None, RuntimeError('OCR failed')]:
+        for error in [None, RuntimeError('Frame extraction failed')]:
             with self.subTest(error=error):
-                with patch.object(CreditsCache, 'tools', return_value=('f', 'p', 't')), \
+                with patch.object(CreditsCache, 'tools', return_value=('f', 'p')), \
                         patch('myflix.credits.analyze', return_value=None, side_effect=error):
                     if error:
                         with self.assertLogs(level='ERROR'):
@@ -123,7 +123,7 @@ class DownloadPublicationTest(unittest.TestCase):
         def detect(*args):
             self.tracker.stop_events['job'].set()
             return 1200
-        with patch.object(CreditsCache, 'tools', return_value=('f', 'p', 't')), \
+        with patch.object(CreditsCache, 'tools', return_value=('f', 'p')), \
                 patch('myflix.credits.analyze', side_effect=detect):
             self.finish()
         self.assertEqual(self.tracker.history[0]['error'], 'cancelled')
@@ -170,7 +170,7 @@ class DownloadPublicationTest(unittest.TestCase):
                 self.app.extensions['credits'].step(threading.Event())
             except BaseException as error:
                 errors.append(error)
-        with patch.object(CreditsCache, 'tools', return_value=('f', 'p', 't')), \
+        with patch.object(CreditsCache, 'tools', return_value=('f', 'p')), \
                 patch('myflix.credits.analyze', side_effect=detect) as detector:
             publisher = threading.Thread(target=self.finish)
             worker = threading.Thread(target=background)

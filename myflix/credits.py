@@ -1,11 +1,10 @@
-"""Bounded, background-only credits OCR; native playback never waits for analysis."""
+"""Cached credits detection using text presence and bounded frame bisection."""
 import hashlib
 import fcntl
 import json
 import logging
 import math
 import os
-import re
 import shutil
 import subprocess
 import tempfile
@@ -18,12 +17,7 @@ from PIL import Image, ImageOps
 from .catalog import identify, media_path
 from .db import connect, settings
 
-VERSION = 3
-# Require an explicit credit role, not arbitrary subtitles, signs or darkness.
-ROLE = re.compile(r"\b(?:executive producers?|co executive producers?|supervising producers?|"
-                  r"associate producers?|produced by|directed by|written by|"
-                  r"casting by|music by|executive consultant|creative consultant|"
-                  r"produttor[ei] esecutiv[oi]|produttore associato|regia di|sceneggiatura di)\b")
+VERSION = 4
 
 
 class Cancelled(Exception):
@@ -62,18 +56,31 @@ def command(args, stop, timeout=60):
                 child.communicate()
 
 
-def credit_text(text):
-    return bool(ROLE.search(re.sub(r"[^a-z]+", " ", text.lower()).strip()))
-
-
 def text_region(image):
-    """Find adjacent rows of letter-sized bright components before running OCR.
+    """Find rows of letter-sized components without reading their words.
 
-    Work at 320 pixels wide; large clouds, faces and solid backgrounds are
-    discarded as components rather than handed to the much slower OCR engine.
-    This only selects a crop. OCR of an explicit credit role confirms the result.
+    Work at 320 pixels wide, discarding large solid shapes such as clouds.
+    A single text line is enough, including a card containing only names.
     """
-    processed = ImageOps.grayscale(image).point(lambda value: 0 if value > 190 else 255)
+    gray = ImageOps.grayscale(image)
+    histogram = gray.histogram()
+    total = sum(histogram)
+    weighted = sum(value * count for value, count in enumerate(histogram))
+    weight = subtotal = 0
+    best, threshold = -1, 0
+    # Otsu's threshold separates foreground from background without assuming
+    # white lettering: fixed brightness cutoffs discard gold and dim credits.
+    for value, count in enumerate(histogram):
+        weight += count
+        subtotal += value * count
+        if not weight or weight == total:
+            continue
+        separation = weight * (total - weight) * (subtotal / weight - (weighted - subtotal) / (total - weight)) ** 2
+        if separation > best:
+            best, threshold = separation, value
+    bright = total - sum(histogram[:threshold + 1])
+    foreground_is_bright = bright <= total / 2
+    processed = gray.point(lambda value: 0 if (value > threshold) == foreground_is_bright else 255)
     scale = max(1, processed.width / 320)
     small = processed.resize((round(processed.width / scale), max(1, round(processed.height / scale))),
                              Image.Resampling.NEAREST)
@@ -129,28 +136,21 @@ def text_region(image):
             segment.append(box)
         if len(segment) >= 6:
             lines.append(bounds(segment))
-    selected = []
-    for index, a in enumerate(lines):
-        for b in lines[index + 1:]:
-            overlap = min(a[2], b[2]) - max(a[0], b[0])
-            if (0 < b[1] - a[1] <= max(a[3] - a[1], b[3] - b[1]) * 4
-                    and overlap >= min(a[2] - a[0], b[2] - b[0]) * .5):
-                selected.extend((a, b))
-    if not selected:
+    if not lines:
         return None
-    left, top, right, bottom = bounds(selected)
+    left, top, right, bottom = bounds(lines)
     crop = (max(0, left - 10), max(0, top - 10), min(width, right + 10), min(height, bottom + 10))
     return processed.crop(tuple(round(value * scale) for value in crop))
 
 
-def analyze(path, ffmpeg, ffprobe, tesseract, stop):
+def analyze(path, ffmpeg, ffprobe, stop):
     info = json.loads(command([ffprobe, "-v", "error", "-show_entries", "format=duration",
                                "-of", "json", path], stop))
     duration = float(info["format"]["duration"])
     if not math.isfinite(duration) or not 60 <= duration <= 7 * 86400:
         return None
-    start = duration - min(180, duration * .2)
-    end = duration - 3
+    start = 0
+    end = duration - .5
     with tempfile.TemporaryDirectory(prefix="myflix-credits-") as directory:
         directory = Path(directory)
         samples = {}
@@ -173,18 +173,22 @@ def analyze(path, ffmpeg, ffprobe, tesseract, stop):
         pivot = max(start, duration - 60)
         if probe(pivot) is not None:
             upper = pivot
+            distance = 30
             while True:
-                lower = max(start, upper - 30)
+                lower = max(start, upper - distance)
                 if lower == upper:
-                    return None  # Text throughout the window: onset is unknown.
+                    logging.info("Credits transition unavailable: text also present at video start")
+                    return None
                 if probe(lower) is None:
                     break
                 upper = lower
+                distance *= 2
         else:
             lower = pivot
             upper = min(end, lower + 30)
             while probe(upper) is None:
                 if upper >= end:
+                    logging.info("Credits transition unavailable: no text found at sampled ending positions")
                     return None
                 lower = upper
                 upper = min(end, (upper + duration) / 2)
@@ -198,18 +202,7 @@ def analyze(path, ffmpeg, ffprobe, tesseract, stop):
             else:
                 upper = middle
 
-        # Reject transient text, then require an explicit credit role only once.
-        # OCR is intentionally excluded from all bracketing/bisection probes.
-        confirmation = min(end, upper + .5)
-        if confirmation <= upper:
-            return None
-        crop = probe(confirmation)
-        if crop is None:
-            return None
-        ocr = directory / "ocr.png"
-        crop.save(ocr)
-        text = command([tesseract, ocr, "stdout", "-l", "eng", "--psm", "11"], stop, timeout=10)
-        return round(upper, 3) if credit_text(text) else None
+        return round(upper, 3)
 
 
 def fingerprint(path, *, location=None):
@@ -269,9 +262,9 @@ class CreditsCache:
     def tools(self):
         bundled = Path(self.database).resolve().parent / "vibravid" / "binary" / "tools"
         result = []
-        for name in ("ffmpeg", "ffprobe", "tesseract"):
+        for name in ("ffmpeg", "ffprobe"):
             binary = shutil.which(name)
-            if not binary and name != "tesseract" and os.access(bundled / name, os.X_OK):
+            if not binary and os.access(bundled / name, os.X_OK):
                 binary = str(bundled / name)
             if not binary:
                 raise RuntimeError(f"Credits detection needs {name}; see README setup instructions")

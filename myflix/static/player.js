@@ -157,7 +157,7 @@
     label(mute, player.muted ? 'Unmute' : 'Mute');
     mute.querySelector('.volume-symbol').hidden = player.muted;
     mute.querySelector('.muted-symbol').hidden = !player.muted;
-    // Cached credits OCR takes precedence; unknown results retain the fallback.
+    // Cached credits detection takes precedence; unknown results retain the fallback.
     var promptStart = creditsStart > 0 && creditsStart < player.duration ? creditsStart :
       player.duration - Math.min(30, player.duration * 0.1);
     var showNext = nextId && canSeek() && player.currentTime > 0 &&

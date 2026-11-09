@@ -12,7 +12,7 @@ from PIL import Image, ImageDraw, ImageFont
 
 from myflix.app import create_app
 from myflix.catalog import scan
-from myflix.credits import Cancelled, analyze, command, credit_text, text_region
+from myflix.credits import Cancelled, analyze, command, text_region
 from myflix.db import connect, initialize
 from myflix.credits import fingerprint
 
@@ -36,13 +36,8 @@ class CreditsTest(unittest.TestCase):
     def tearDown(self):
         self.temp.cleanup()
 
-    def test_ocr_confirmation_requires_an_explicit_credit_role(self):
-        self.assertTrue(credit_text('Executive Producers\nJAMES L BROOKS'))
-        self.assertTrue(credit_text('Produttori esecutivi'))
-        self.assertFalse(credit_text('The executive is coming to dinner'))
-
     def test_cache_playback_contract_and_file_replacement(self):
-        with patch.object(self.cache, 'tools', return_value=('ffmpeg', 'ffprobe', 'tesseract')), \
+        with patch.object(self.cache, 'tools', return_value=('ffmpeg', 'ffprobe')), \
                 patch('myflix.credits.analyze', return_value=1319.5) as detector:
             self.assertTrue(self.cache.step(self.stop))
             self.assertFalse(self.cache.step(self.stop))
@@ -57,13 +52,13 @@ class CreditsTest(unittest.TestCase):
             self.assertEqual(detector.call_count, 2)
 
     def test_inconclusive_results_cached_and_failures_retry(self):
-        with patch.object(self.cache, 'tools', return_value=('f', 'p', 't')), \
+        with patch.object(self.cache, 'tools', return_value=('f', 'p')), \
                 patch('myflix.credits.analyze', return_value=None):
             self.assertTrue(self.cache.step(self.stop))
             self.assertFalse(self.cache.step(self.stop))
             self.assertIsNone(self.cache.position(self.item))
         self.video.write_bytes(b'another file')
-        with patch.object(self.cache, 'tools', return_value=('f', 'p', 't')), \
+        with patch.object(self.cache, 'tools', return_value=('f', 'p')), \
                 patch('myflix.credits.analyze', side_effect=TimeoutError), self.assertLogs(level='ERROR'):
             self.assertTrue(self.cache.step(self.stop))
             self.assertFalse(self.cache.step(self.stop))
@@ -91,7 +86,7 @@ class CreditsTest(unittest.TestCase):
                         with connect(self.database) as db:
                             db.execute("UPDATE settings SET value=? WHERE key='videos_path'", (str(self.base),))
                     return 100
-                with patch.object(self.cache, 'tools', return_value=('f', 'p', 't')), \
+                with patch.object(self.cache, 'tools', return_value=('f', 'p')), \
                         patch('myflix.credits.analyze', side_effect=detect):
                     self.cache.step(self.stop)
                 with connect(self.database) as db:
@@ -125,7 +120,7 @@ class CreditsTest(unittest.TestCase):
             timer.join()
 
     def test_missing_tools_and_shutdown_do_not_cache_failures(self):
-        with patch.object(self.cache, 'tools', side_effect=RuntimeError('missing OCR')):
+        with patch.object(self.cache, 'tools', side_effect=RuntimeError('missing FFmpeg')):
             with self.assertRaises(RuntimeError):
                 self.cache.step(self.stop)
         self.stop.set()
@@ -134,8 +129,8 @@ class CreditsTest(unittest.TestCase):
         with connect(self.database) as db:
             self.assertEqual(db.execute('SELECT COUNT(*) FROM credits').fetchone()[0], 0)
 
-    def detect(self, onset=None, *, duration=1380, visible=None, ocr_text='Executive Producers'):
-        probes, ocr_calls, positions = [], [], {}
+    def detect(self, onset=None, *, duration=1380, visible=None):
+        probes, tools_used, positions = [], [], {}
 
         def region(image):
             position = positions[str(image.filename)]
@@ -143,6 +138,7 @@ class CreditsTest(unittest.TestCase):
             return Image.new('L', (64, 36), 255) if found else None
 
         def fake_command(args, stop, timeout=60):
+            tools_used.append(args[0])
             if args[0] == 'probe':
                 return json.dumps({'format': {'duration': str(duration)}})
             if args[0] == 'ffmpeg':
@@ -153,50 +149,62 @@ class CreditsTest(unittest.TestCase):
                 positions[str(args[-1])] = position
                 Image.new('RGB', (64, 36)).save(args[-1])
                 return ''
-            self.assertEqual(args[0], 'ocr')
-            ocr_calls.append(args)
-            return ocr_text
+            self.fail('Only FFmpeg and FFprobe may be invoked')
 
         with patch('myflix.credits.command', side_effect=fake_command), \
                 patch('myflix.credits.text_region', side_effect=region):
-            result = analyze(self.video, 'ffmpeg', 'probe', 'ocr', self.stop)
-        return result, probes, ocr_calls
+            result = analyze(self.video, 'ffmpeg', 'probe', self.stop)
+        return result, probes, tools_used
 
     def test_bisection_brackets_early_and_late_credits_with_three_second_tolerance(self):
-        for onset in [1240, 1319.4, 1340, 1375]:
+        for onset in [100, 1100, 1200, 1240, 1319.4, 1340, 1375]:
             with self.subTest(onset=onset):
-                result, probes, ocr = self.detect(onset)
+                result, probes, tools = self.detect(onset)
                 self.assertEqual(probes[0], 1320)
                 self.assertEqual(probes[1], 1290 if onset <= 1320 else 1350)
                 self.assertGreaterEqual(result, onset)
                 self.assertLessEqual(result - onset, 3)
-                self.assertLessEqual(len(probes), 10)
+                self.assertLessEqual(len(probes), 20)
                 self.assertEqual(len(probes), len(set(probes)), 'already checked frames are reused')
-                self.assertEqual(len(ocr), 1, 'OCR only confirms the result, never drives bisection')
+                self.assertEqual(set(tools), {'ffmpeg', 'probe'})
 
-    def test_no_transition_or_unconfirmed_text_retains_fallback(self):
-        for onset in [None, 1100, 1200]:
-            with self.subTest(onset=onset):
-                result, probes, ocr = self.detect(onset)
+    def test_no_text_transition_is_reported(self):
+        for onset in [None, 0]:
+            with self.subTest(onset=onset), self.assertLogs(level='INFO') as messages:
+                result, probes, tools = self.detect(onset)
                 self.assertIsNone(result)
-                self.assertLessEqual(len(probes), 7)
-                self.assertEqual(len(ocr), 0)
-        result, _, ocr = self.detect(1320, ocr_text='Could you please pass the salt?')
-        self.assertIsNone(result, 'ordinary dialogue or signs must not confirm credits')
-        self.assertEqual(len(ocr), 1)
-        result, _, ocr = self.detect(visible=lambda position: 1320 <= position < 1320.3)
-        self.assertIsNone(result, 'a transient text detection must not affect playback')
-        self.assertEqual(len(ocr), 0)
+                self.assertLessEqual(len(probes), 12)
+                self.assertTrue(any('transition unavailable' in message for message in messages.output))
+                self.assertEqual(set(tools), {'ffmpeg', 'probe'})
 
-    def test_short_or_invalid_media_never_seek_outside_the_ending(self):
-        result, probes, _ = self.detect(55, duration=60)
-        self.assertIsNone(result, 'the default prompt already covers an onset in the last three seconds')
-        self.assertTrue(all(48 <= position <= 57 for position in probes))
+    def test_single_sample_of_text_is_not_rejected_by_extra_confirmation(self):
+        result, probes, tools = self.detect(visible=lambda position: 1320 <= position < 1320.3)
+        self.assertEqual(result, 1320)
+        self.assertEqual(len(probes), 6)
+        self.assertEqual(set(tools), {'ffmpeg', 'probe'})
+
+    def test_short_or_invalid_media_never_seek_outside_the_video(self):
+        result, probes, tools = self.detect(55, duration=60)
+        self.assertGreaterEqual(result, 55)
+        self.assertLessEqual(result - 55, 3)
+        self.assertTrue(all(0 <= position <= 59.5 for position in probes))
         for duration in [0, 59, float('nan'), float('inf'), 8 * 86400]:
-            result, probes, ocr = self.detect(duration=duration)
+            result, probes, tools = self.detect(duration=duration)
             self.assertIsNone(result)
             self.assertEqual(probes, [])
-            self.assertEqual(ocr, [])
+            self.assertEqual(tools, ['probe'])
+
+    def test_gold_and_dim_names_are_text_without_recognizing_words(self):
+        for color in [(210, 170, 90), (165, 165, 165), (130, 60, 20), (40, 40, 40)]:
+            with self.subTest(color=color):
+                image = Image.new('RGB', (640, 360), 'black')
+                ImageDraw.Draw(image).text((150, 140), 'SOME RANDOM NAMES',
+                                          font=ImageFont.load_default(size=24), fill=color)
+                self.assertIsNotNone(text_region(image))
+        image = Image.new('RGB', (640, 360), 'white')
+        ImageDraw.Draw(image).text((150, 140), 'SOME RANDOM NAMES',
+                                  font=ImageFont.load_default(size=24), fill='black')
+        self.assertIsNotNone(text_region(image))
 
     def test_text_gate_preserves_bright_credits_and_discards_solid_shapes(self):
         for color in ['black', 'white', (40, 80, 90)]:
@@ -206,7 +214,9 @@ class CreditsTest(unittest.TestCase):
         draw = ImageDraw.Draw(image)
         draw.rectangle((10, 10, 200, 60), fill='white')
         draw.ellipse((400, 10, 550, 90), fill='white')
-        self.assertIsNone(text_region(image), 'bright scenery alone does not need OCR')
+        self.assertIsNone(text_region(image), 'solid scenery is not text')
+        draw.text((150, 140), 'JAMES L BROOKS', font=ImageFont.load_default(size=24), fill='white')
+        self.assertIsNotNone(text_region(image), 'a single line of names counts as text')
         draw.multiline_text((150, 140), 'Executive Producers\nJAMES L BROOKS\nMATT GROENING',
                             font=ImageFont.load_default(size=24), fill='white', spacing=8)
         crop = text_region(image)
