@@ -80,6 +80,7 @@ function screen(blockFirstPlay = false, options = {}) {
   player.audioTracks = trackList(options.audioTracks);
   player.textTracks = trackList(options.textTracks);
   player.setAttribute('data-id', '1'); player.setAttribute('data-watched', '0'); player.setAttribute('data-position', '120');
+  if (options.creditsStart !== undefined) player.setAttribute('data-credits-start', options.creditsStart);
   player.play = () => {
     player.playCalls += 1;
     if (blockFirstPlay && player.playCalls === 1) return {catch: fn => fn()};
@@ -106,7 +107,7 @@ function screen(blockFirstPlay = false, options = {}) {
     this.respond = () => {
       this.status = options.nextError ? 404 : 200;
       this.responseText = JSON.stringify({id: 2, title: 'Second episode', series: 'Show', season: 1, episode: 2,
-        position: 0, stream_url: '/media/2', watch_url: '/watch/2', next: null});
+        position: 0, credits_start: options.nextCreditsStart || null, stream_url: '/media/2', watch_url: '/watch/2', next: options.moreEpisodes ? {id: 3, season: 1, episode: 3, title: 'Third', watch_url: '/watch/3'} : null});
       this.onload();
     };
     this.send = body => {
@@ -250,6 +251,32 @@ assert.equal(prompt.player.src, '/media/2');
 assert.equal(prompt.player.paused, false, 'selecting up-next starts the episode');
 assert.equal(prompt.location.href, '/watch/2');
 assert.equal(prompt.document.fullscreenElement, prompt.elements['player-shell'], 'episode transitions preserve fullscreen');
+
+const creditsPrompt = screen(false, {cachedMetadata: true, creditsStart: 850, moreEpisodes: true, nextCreditsStart: 900});
+creditsPrompt.player.currentTime = 849;
+creditsPrompt.player.emit('timeupdate');
+assert.equal(creditsPrompt.elements['up-next'].hidden, true);
+creditsPrompt.player.currentTime = 850;
+creditsPrompt.player.emit('timeupdate');
+assert.equal(creditsPrompt.elements['up-next'].hidden, false, 'cached OCR triggers at credits before the normal final 30 seconds');
+assert.equal(creditsPrompt.player.getAttribute('data-id'), '1', 'credits prompt never automatically skips remaining scenes');
+creditsPrompt.player.currentTime = 800;
+creditsPrompt.player.emit('timeupdate');
+assert.equal(creditsPrompt.elements['up-next'].hidden, true, 'rewinding before credits hides the prompt');
+creditsPrompt.elements['next-episode'].click();
+creditsPrompt.player.currentTime = 850;
+creditsPrompt.player.emit('timeupdate');
+assert.equal(creditsPrompt.elements['up-next'].hidden, true, 'next episode replaces previous credits timing');
+creditsPrompt.player.currentTime = 900;
+creditsPrompt.player.emit('timeupdate');
+assert.equal(creditsPrompt.elements['up-next'].hidden, false, 'next episode uses its own OCR timestamp');
+for (const invalid of ['', 'invalid', -10, 1001, 'Infinity']) {
+  const fallback = screen(false, {cachedMetadata: true, creditsStart: invalid});
+  fallback.player.currentTime = 969; fallback.player.emit('timeupdate');
+  assert.equal(fallback.elements['up-next'].hidden, true);
+  fallback.player.currentTime = 970; fallback.player.emit('timeupdate');
+  assert.equal(fallback.elements['up-next'].hidden, false, 'invalid credits timestamp retains fallback');
+}
 
 const autoplay = screen(false, {cachedMetadata: true, deferNext: true});
 autoplay.player.currentTime = 1000; autoplay.player.paused = true; autoplay.player.ended = true;

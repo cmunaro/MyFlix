@@ -15,6 +15,7 @@ def main():
     stop = threading.Event()
     scan_ready = threading.Event()
     engine = ManagedEngine(app)
+    credits_worker = None
 
     def terminate(signum, frame):
         raise KeyboardInterrupt
@@ -33,6 +34,9 @@ def main():
     try:
         engine.start()
         threading.Thread(target=index, name="library-index", daemon=True).start()
+        credits_worker = threading.Thread(target=app.extensions["credits"].run, args=(stop,),
+                                          name="credits-analysis", daemon=True)
+        credits_worker.start()
         threading.Thread(target=app.extensions["artwork"].run, args=(stop,), name="artwork-cache", daemon=True).start()
         threading.Thread(target=app.extensions["discovery"].run, args=(stop,), name="discovery-cache", daemon=True).start()
         threading.Thread(target=app.extensions["monitor"].run, args=(stop, scan_ready), name="series-monitor", daemon=True).start()
@@ -53,6 +57,8 @@ def main():
         pass
     finally:
         stop.set()
+        if credits_worker is not None:
+            credits_worker.join(timeout=5)
         engine.close()
 
 

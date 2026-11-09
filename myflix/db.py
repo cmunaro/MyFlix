@@ -42,6 +42,11 @@ def initialize(path):
                 watched INTEGER NOT NULL DEFAULT 0,
                 updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
+            CREATE TABLE IF NOT EXISTS credits (
+                fingerprint TEXT PRIMARY KEY,
+                position REAL,
+                retry_at REAL NOT NULL DEFAULT 0
+            );
             CREATE TABLE IF NOT EXISTS media_identity (
                 media_id INTEGER PRIMARY KEY REFERENCES media(id),
                 identity TEXT NOT NULL
@@ -101,6 +106,13 @@ def initialize(path):
             CREATE INDEX IF NOT EXISTS download_retries_pending ON download_retries(root,state,id);
         """)
         db.execute("BEGIN IMMEDIATE")
+        if any(row["name"] == "media_id" for row in db.execute("PRAGMA table_info(credits)")):
+            # Credits belong to file bytes, including completed files that the
+            # catalog has not scanned yet. Retain derived results on upgrade.
+            db.execute("ALTER TABLE credits RENAME TO credits_legacy")
+            db.execute("CREATE TABLE credits(fingerprint TEXT PRIMARY KEY,position REAL,retry_at REAL NOT NULL DEFAULT 0)")
+            db.execute("INSERT OR REPLACE INTO credits SELECT fingerprint,position,retry_at FROM credits_legacy")
+            db.execute("DROP TABLE credits_legacy")
         columns = {row["name"] for row in db.execute("PRAGMA table_info(discoveries)")}
         for name, definition in (("error", "TEXT NOT NULL DEFAULT ''"),
                                  ("download_id", "TEXT NOT NULL DEFAULT ''"),

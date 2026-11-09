@@ -2,7 +2,7 @@
 {% block body_class %}tv-player controls-visible{% endblock %}
 {% block header %}{% endblock %}
 {% block title %}{{ item.title }} · MyFlix{% endblock %}
-{% block scripts %}<script src="{{ url_for('static', filename='player.js', v='next-prompt-focus-1') }}" defer></script>{% endblock %}
+{% block scripts %}<script src="{{ url_for('static', filename='player.js', v='credits-prompt-1') }}" defer></script>{% endblock %}
 {% macro icon(name) -%}
 <svg viewBox="0 0 32 32" aria-hidden="true" focusable="false">
 {% if name == 'play' %}<path d="M10 5v22l18-11z"/>
@@ -19,7 +19,7 @@
 {%- endmacro %}
 {% block content %}
 <div id="player-shell" class="player-shell">
-  <div class="player-wrap"><video id="player" controls playsinline preload="metadata" tabindex="0" src="{{ url_for('stream',media_id=item.id) }}" data-id="{{ item.id }}" data-position="{{ 0 if item.watched else item.position }}" aria-label="{{ item.title }}"></video></div>
+  <div class="player-wrap"><video id="player" controls playsinline preload="metadata" tabindex="0" src="{{ url_for('stream',media_id=item.id) }}" data-id="{{ item.id }}" data-position="{{ 0 if item.watched else item.position }}" data-credits-start="{{ item.credits_start if item.credits_start is not none else '' }}" aria-label="{{ item.title }}"></video></div>
   <header class="watch-overlay" data-player-overlay>
     <a class="player-icon back" href="/" aria-label="Back to library" title="Back to library">{{ icon('back') }}</a>
     <div class="watch-heading"><p id="episode-heading">{{ item.series or 'Now playing' }}{% if item.series %} · S{{ item.season }}:E{{ item.episode }}{% endif %}</p><h1 id="episode-title">{{ item.title }}</h1></div>

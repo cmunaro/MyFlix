@@ -55,14 +55,10 @@ def prepare(database):
     downloads.mkdir(exist_ok=True)
     config["OUTPUT"]["root_path"] = str(downloads)
     config["OUTPUT"]["episode_format"] = "%(series_name)/Season %(season:02d)/%(series_name) S%(season:02d)E%(episode:02d) %(episode_name)"
-    hook = {
-        "name": "myflix-publish", "type": "python",
-        "path": str(ROOT / "deploy" / "vibravid_publish.py"),
-        "args": ["--downloads", str(downloads), "--database", str(Path(database).resolve())],
-        "enabled": True, "continue_on_error": False, "timeout": 3600,
-    }
-    hooks = [dict(item) for item in config["HOOKS"].get("post_download", []) if item.get("name") != hook["name"]]
-    config["HOOKS"]["post_download"] = hooks + [hook]
+    # The completion adapter publishes before the tracker reports success.
+    # Remove the legacy hook so the same video cannot be published twice.
+    config["HOOKS"]["post_download"] = [dict(item) for item in config["HOOKS"].get("post_download", [])
+                                         if item.get("name") != "myflix-publish"]
     # Atomic writes retain the prior working config if serialization is interrupted.
     temporary = conf / ".config.tmp"
     with temporary.open("w", encoding="utf-8") as output:

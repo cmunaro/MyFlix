@@ -54,7 +54,7 @@ trap 'exit 143' TERM
 trap 'exit 129' HUP
 
 apt-get update
-apt-get install -y ca-certificates curl git xz-utils build-essential pkg-config libffi-dev libssl-dev
+apt-get install -y ca-certificates curl git xz-utils build-essential pkg-config libffi-dev libssl-dev tesseract-ocr tesseract-ocr-eng
 install -d -m 0755 "$PREFIX" "$PREFIX/releases" "$PREFIX/.mise/bin"
 export MISE_DATA_DIR="$PREFIX/.mise-data"
 export MISE_CONFIG_DIR="$PREFIX/.mise-config"

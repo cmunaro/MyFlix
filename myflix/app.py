@@ -13,6 +13,7 @@ from werkzeug.exceptions import HTTPException
 from .artwork import ArtworkCache
 from .catalog import media_path, scan_safely
 from .db import connect, initialize, settings
+from .credits import CreditsCache
 from .discovery import DiscoveryCache
 from .engine_jobs import validate_limits
 from .monitoring import SeriesMonitor, episode_status, follow, lookup_status
@@ -54,6 +55,8 @@ def create_app(config=None):
             scan_lock.release()
 
     app.extensions["scan"] = run_scan
+    credits_cache = CreditsCache(database)
+    app.extensions["credits"] = credits_cache
     vibravid = VibraVid(app.config["VIBRAVID_ADDRESS"], app.config["VIBRAVID_SECRET"])
     app.extensions["vibravid"] = vibravid
     monitor = SeriesMonitor(database, vibravid)
@@ -227,6 +230,7 @@ def create_app(config=None):
 
     def playback(media_id):
         item = get_media(media_id)
+        item["credits_start"] = credits_cache.position(item)
         with connect(database) as db:
             next_item = db.execute("""SELECT id,title,season,episode FROM media WHERE series=? AND series!=''
                 AND root=? AND available=1 AND hidden=0 AND (season>? OR (season=? AND episode>?))
@@ -247,6 +251,7 @@ def create_app(config=None):
         return jsonify(id=item["id"], title=item["title"], series=item["series"],
                        season=item["season"], episode=item["episode"],
                        position=0 if item["watched"] else item["position"],
+                       credits_start=item["credits_start"],
                        stream_url=url_for("stream", media_id=item["id"]),
                        watch_url=url_for("watch", media_id=item["id"]), next=next_item)
 

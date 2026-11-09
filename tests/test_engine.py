@@ -34,6 +34,9 @@ class ManagedEngineTest(unittest.TestCase):
         self.assertTrue((runtime / "GUI/webgui/wsgi.py").is_file())
         config = tomlkit.parse((state / "Conf/config.toml").read_text())
         config["DOWNLOAD"]["select_audio"] = "eng"
+        config["HOOKS"]["post_download"] = [
+            {"name": "myflix-publish", "type": "python", "path": "legacy.py"},
+            {"name": "household-hook", "type": "python", "path": "custom.py"}]
         (state / "Conf/config.toml").write_text(tomlkit.dumps(config))
         prepare(self.database)
         config = tomlkit.parse((state / "Conf/config.toml").read_text())
@@ -42,8 +45,9 @@ class ManagedEngineTest(unittest.TestCase):
         self.assertFalse(config["PROCESS"]["use_live_mux"])
         self.assertFalse(config["DOWNLOAD"]["use_live_decrypt"])
         hooks = config["HOOKS"]["post_download"]
-        self.assertEqual(len([h for h in hooks if h["name"] == "myflix-publish"]), 1)
-        self.assertIn("--database", hooks[0]["args"])
+        self.assertFalse(any(h["name"] == "myflix-publish" for h in hooks),
+                         "publication is synchronous before completion, never a duplicate post-download hook")
+        self.assertTrue(any(h["name"] == "household-hook" for h in hooks))
         self.assertEqual(config["OUTPUT"]["root_path"], str(state / "downloads"))
 
     def test_publication_uses_latest_ui_library_selection(self):

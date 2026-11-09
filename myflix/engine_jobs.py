@@ -1,6 +1,7 @@
 """Concurrency adapters for the pinned engine, without editing its source."""
 import hashlib
 import heapq
+import logging
 import shlex
 import sys
 import tempfile
@@ -86,18 +87,67 @@ class DownloadStages:
     """Bound processing within jobs that retain their scheduler slot throughout."""
     def __init__(self, processing):
         self.processing = threading.BoundedSemaphore(processing)
+        self.local = threading.local()
 
     def finish(self, work, cancelled, waiting):
+        if cancelled():
+            raise InterruptedError("cancelled")
+        if getattr(self.local, "processing", False):
+            return work()
         waiting()
         while not self.processing.acquire(timeout=0.2):
             if cancelled():
                 raise InterruptedError("cancelled")
         try:
+            self.local.processing = True
             if cancelled():
                 raise InterruptedError("cancelled")
             return work()
         finally:
+            self.local.processing = False
             self.processing.release()
+
+
+def install_publication(tracker, database, stages):
+    """Publish verified outputs before the engine records successful completion."""
+    from deploy.vibravid_publish import publish_completed
+    from .credits import Cancelled
+
+    original = tracker.complete_download
+    finishing = set()
+    downloads = Path(database).resolve().parent / "vibravid" / "downloads"
+
+    def complete(download_id, success=True, error=None, path=None):
+        if not success or not path:
+            return original(download_id, success=success, error=error, path=path)
+        with tracker._lock:
+            if download_id in finishing:
+                return
+            known = download_id in tracker.downloads or any(
+                item.get("id") == download_id and item.get("status") == "timed_out" for item in tracker.history)
+            if not known:
+                return  # Duplicate terminal notification; never publish again.
+            finishing.add(download_id)
+            stop = tracker.stop_events.setdefault(download_id, threading.Event())
+        try:
+            if tracker.is_stopped(download_id):
+                stop.set()
+            def work():
+                tracker.update_status(download_id, "Processing")
+                publish_completed(path, downloads, database=database, stop=stop)
+            try:
+                stages.finish(work, stop.is_set, lambda: tracker.update_status(download_id, "Waiting for processing"))
+            except (Cancelled, InterruptedError):
+                success, error = False, "cancelled"
+            except Exception:
+                logging.exception("Completed download could not be published; staging file retained")
+                success, error = False, "Library publication failed. Check the service logs; the staging file was retained."
+            return original(download_id, success=success, error=error, path=path)
+        finally:
+            with tracker._lock:
+                finishing.discard(download_id)
+
+    tracker.complete_download = complete
 
 
 class PriorityDownloads:
@@ -190,10 +240,12 @@ def install_stages(downloads, processing, *, database=None):
     from VibraVid.core.downloader.base import BaseDownloader
     from VibraVid.core.downloader._generic import Generic_Downloader
     from VibraVid.core.downloader.yt_dlp_downloader import YTDLPDownloader
-    from VibraVid.core.ui.tracker import context_tracker
+    from VibraVid.core.ui.tracker import context_tracker, download_tracker
 
     infrastructure.set_max_download_slots(downloads)
     stages = DownloadStages(processing)
+    if database:
+        install_publication(download_tracker, database, stages)
     scheduler = PriorityDownloads(downloads, lambda count: setattr(infrastructure, "_active_downloads", count), database)
     infrastructure.download_executor.shutdown(wait=True)
     infrastructure.download_executor = scheduler

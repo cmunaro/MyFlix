@@ -25,6 +25,7 @@
   var nextPrompt = document.getElementById('next-prompt');
   var upNext = document.getElementById('up-next');
   var nextId = upNext.getAttribute('data-next-id');
+  var creditsStart = Number(player.getAttribute('data-credits-start'));
   var overlays = Array.prototype.slice.call(shell.querySelectorAll('[data-player-overlay]'));
   var controls = Array.prototype.slice.call(shell.querySelectorAll('button,a,input')).filter(function (el) {
     return !trackPanel.contains(el) && overlays.some(function (overlay) { return overlay.contains(el); });
@@ -156,9 +157,11 @@
     label(mute, player.muted ? 'Unmute' : 'Mute');
     mute.querySelector('.volume-symbol').hidden = player.muted;
     mute.querySelector('.muted-symbol').hidden = !player.muted;
-    // On short clips use the final 10%, otherwise the last 30 seconds.
+    // Cached credits OCR takes precedence; unknown results retain the fallback.
+    var promptStart = creditsStart > 0 && creditsStart < player.duration ? creditsStart :
+      player.duration - Math.min(30, player.duration * 0.1);
     var showNext = nextId && canSeek() && player.currentTime > 0 &&
-      player.duration - player.currentTime <= Math.min(30, player.duration * 0.1) && !switchingEpisode;
+      player.currentTime >= promptStart && !switchingEpisode;
     var appearing = showNext && upNext.hidden;
     if (!showNext && upNext.contains(document.activeElement)) { player.focus(); }
     upNext.hidden = !showNext;
@@ -300,6 +303,7 @@
       mediaId = String(data.id);
       player.setAttribute('data-id', mediaId);
       player.setAttribute('data-position', data.position || 0);
+      creditsStart = Number(data.credits_start);
       player.setAttribute('aria-label', data.title);
       nextId = data.next ? String(data.next.id) : '';
       nextLink.hidden = !nextId;
