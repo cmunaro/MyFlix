@@ -159,8 +159,10 @@
     // On short clips use the final 10%, otherwise the last 30 seconds.
     var showNext = nextId && canSeek() && player.currentTime > 0 &&
       player.duration - player.currentTime <= Math.min(30, player.duration * 0.1) && !switchingEpisode;
+    var appearing = showNext && upNext.hidden;
     if (!showNext && upNext.contains(document.activeElement)) { player.focus(); }
     upNext.hidden = !showNext;
+    if (appearing) { nextPrompt.focus(); }
   }
   function showControls() {
     visible = true;

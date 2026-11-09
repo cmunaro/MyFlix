@@ -2,7 +2,7 @@
 {% block body_class %}tv-player controls-visible{% endblock %}
 {% block header %}{% endblock %}
 {% block title %}{{ item.title }} · MyFlix{% endblock %}
-{% block scripts %}<script src="{{ url_for('static', filename='player.js', v='double-click-fullscreen-1') }}" defer></script>{% endblock %}
+{% block scripts %}<script src="{{ url_for('static', filename='player.js', v='next-prompt-focus-1') }}" defer></script>{% endblock %}
 {% macro icon(name) -%}
 <svg viewBox="0 0 32 32" aria-hidden="true" focusable="false">
 {% if name == 'play' %}<path d="M10 5v22l18-11z"/>

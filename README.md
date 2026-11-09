@@ -11,7 +11,7 @@ MyFlix turns a folder of films and series into a TV-friendly library with cover 
 ## Why MyFlix?
 
 - **Made for the sofa.** Browse horizontal shelves with your remote, open seasons and episodes, and watch in an edge-to-edge player whose controls fade away.
-- **Pick up where you left off.** Resume across household devices, track watched episodes automatically, and move to the next episode without leaving fullscreen.
+- **Pick up where you left off.** Resume across household devices, track watched episodes automatically, and move to the next episode without leaving fullscreen. The next-episode prompt focuses its button when it appears, so pressing OK starts the next episode immediately.
 - **Manage everything in one place.** Search providers, queue downloads, edit titles, organize series, and choose your library folder from the built-in admin interface.
 - **Keep up with series.** Follow a show to download missing unwatched episodes from existing and future seasons, or choose notification-only mode. Watched episodes and excluded seasons are skipped automatically.
 - **Covers without API keys.** MyFlix uses local artwork first and caches provider covers in the background when available.
