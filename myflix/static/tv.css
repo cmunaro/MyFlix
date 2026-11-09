@@ -53,6 +53,7 @@
 .watch-controls { position: absolute; right: 0; bottom: 0; left: 0; z-index: 3; padding: 70px 3% 22px; background: linear-gradient(transparent, #000b 60%, #000d); }
 .timeline-row { display: flex; align-items: center; margin-bottom: 8px; }
 .timeline-track { flex: 1; position: relative; height: 32px; }
+#seek-preview { position: absolute; bottom: 100%; left: 0; transform: translateX(-50%); padding: 4px 8px; border-radius: 4px; background: #171717; color: #fff; font-size: 16px; font-variant-numeric: tabular-nums; white-space: nowrap; pointer-events: none; }
 #playback-progress { position: absolute; top: 14px; left: 0; width: 100%; height: 4px; border: 0; background: #777; color: #e50914; }
 #playback-progress::-webkit-progress-bar { background: #777; }
 #playback-progress::-webkit-progress-value { background: #e50914; }

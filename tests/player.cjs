@@ -6,7 +6,7 @@ function screen(blockFirstPlay = false, options = {}) {
   let document, now = 0, timerId = 0, created = 0;
   function element(id, parent = null) {
     const attrs = {}, listeners = {}, symbols = {};
-    const el = {id, parentNode: parent, children: [], hidden: false, disabled: false, offsetWidth: 54, offsetHeight: 54,
+    const el = {id, style: {}, parentNode: parent, children: [], hidden: false, disabled: false, offsetWidth: 54, offsetHeight: 54,
       addEventListener(name, fn) { (listeners[name] ||= []).push(fn); },
       removeEventListener(name, fn) { listeners[name] = (listeners[name] || []).filter(listener => listener !== fn); },
       appendChild(child) { child.parentNode = this; this.children.push(child); return child; },
@@ -35,6 +35,7 @@ function screen(blockFirstPlay = false, options = {}) {
   element('player-status', shell);
   element('player-loading', shell).hidden = true;
   for (const id of ['toggle-play', 'rewind', 'forward', 'mute', 'track-settings', 'next-episode', 'fullscreen', 'timeline', 'remaining-time', 'playback-progress']) element(id, overlay);
+  element('seek-preview', overlay).hidden = true;
   const trackPanel = element('track-panel', shell); trackPanel.hidden = true;
   const audioGroup = element('audio-track-group', trackPanel), subtitleGroup = element('subtitle-track-group', trackPanel);
   const audioOptions = element('audio-track-options', audioGroup), subtitleOptions = element('subtitle-track-options', subtitleGroup);
@@ -335,6 +336,40 @@ desktop.key(39);
 assert.equal(desktop.fullscreenRequests.length, 0, 'desktop playback does not enter fullscreen automatically');
 desktop.tick(3000); desktop.document.emit('mousemove');
 assert(desktop.classes.has('controls-visible'), 'desktop mouse interaction still reveals controls');
+
+const hover = screen(false, {cachedMetadata: true, nextId: ''});
+const hoverBar = hover.elements.timeline, preview = hover.elements['seek-preview'];
+hoverBar.emit('mouseenter', {clientX: 300});
+assert.equal(preview.hidden, false, 'desktop hover shows the timestamp');
+assert.equal(preview.textContent, '4:10');
+assert.equal(preview.style.left, '200px');
+assert.equal(hover.player.currentTime, 120, 'hover does not seek');
+assert.equal(hover.requests.length, 0, 'hover does not save progress');
+hover.player.duration = 7200;
+hoverBar.emit('mousemove', {clientX: 500});
+assert.equal(preview.textContent, '1:00:00', 'long timestamps include hours');
+hoverBar.emit('mousemove', {clientX: 0});
+assert.equal(preview.textContent, '0:00');
+assert.equal(preview.style.left, '27px', 'preview stays inside the left edge');
+hoverBar.emit('mousemove', {clientX: 1000});
+assert.equal(preview.textContent, '2:00:00');
+assert.equal(preview.style.left, '773px', 'preview stays inside the right edge');
+hoverBar.emit('mouseleave');
+assert.equal(preview.hidden, true, 'leaving the bar hides the timestamp');
+hoverBar.emit('mouseenter', {clientX: 300});
+hover.tick(3000);
+assert.equal(preview.hidden, true, 'idle controls also dismiss the preview');
+hoverBar.emit('mousemove', {clientX: 300});
+hover.player.duration = Infinity;
+hover.player.emit('durationchange');
+assert.equal(preview.hidden, true, 'losing a finite duration clears the preview');
+hoverBar.emit('mousemove', {clientX: 300});
+assert.equal(preview.hidden, true, 'unknown durations cannot show a timestamp');
+const earlyHover = screen();
+earlyHover.elements.timeline.emit('mouseenter', {clientX: 300});
+assert.equal(earlyHover.elements['seek-preview'].hidden, true, 'hover waits for metadata');
+tv.elements.timeline.emit('mouseenter', {clientX: 300});
+assert.equal(tv.elements['seek-preview'].hidden, true, 'TV pointer does not show a desktop preview');
 
 const mouseSeek = screen(false, {cachedMetadata: true, nextId: ''});
 const seekBar = mouseSeek.elements.timeline;

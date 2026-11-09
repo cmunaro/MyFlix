@@ -8,6 +8,7 @@
   var toggle = document.getElementById('toggle-play');
   var center = document.getElementById('center-play');
   var timeline = document.getElementById('timeline');
+  var seekPreview = document.getElementById('seek-preview');
   var progress = document.getElementById('playback-progress');
   var remaining = document.getElementById('remaining-time');
   var mute = document.getElementById('mute');
@@ -149,6 +150,7 @@
     if (!scrubbing) { timeline.value = canSeek() ? player.currentTime : 0; }
     timeline.max = canSeek() ? player.duration : 0;
     timeline.disabled = !canSeek();
+    if (!canSeek()) { hideSeekPreview(); }
     rewind.disabled = forward.disabled = !canSeek();
     progress.max = canSeek() ? player.duration : 1;
     progress.value = canSeek() ? player.currentTime : 0;
@@ -182,6 +184,7 @@
     // A focused button must not keep the overlay alive or receive hidden clicks.
     if (overlays.some(function (el) { return el.contains(document.activeElement); })) { player.focus(); }
     visible = false;
+    hideSeekPreview();
     document.body.classList.remove('controls-visible');
     overlays.forEach(function (el) { el.setAttribute('aria-hidden', 'true'); });
     controls.forEach(function (el) { el.setAttribute('tabindex', '-1'); });
@@ -339,16 +342,33 @@
     seekTo(Number(timeline.value));
     showControls();
   };
-  function seekFromMouse(event) {
-    if (!canSeek() || !isFinite(event.clientX)) { return false; }
+  function mousePosition(event) {
+    if (!canSeek() || !isFinite(event.clientX)) { return null; }
     var bounds = timeline.getBoundingClientRect();
-    if (bounds.width <= 0) { return false; }
+    if (bounds.width <= 0) { return null; }
     var fraction = Math.max(0, Math.min(1, (event.clientX - bounds.left) / bounds.width));
-    seekTo(fraction * player.duration);
+    return {time: fraction * player.duration, left: fraction * bounds.width, width: bounds.width};
+  }
+  function hideSeekPreview() { seekPreview.hidden = true; }
+  function previewFromMouse(event) {
+    var position = mousePosition(event);
+    if (!position) { hideSeekPreview(); return; }
+    seekPreview.textContent = clock(position.time);
+    seekPreview.hidden = false;
+    var half = Math.min(seekPreview.offsetWidth / 2, position.width / 2);
+    seekPreview.style.left = Math.max(half, Math.min(position.width - half, position.left)) + 'px';
+  }
+  function seekFromMouse(event) {
+    var position = mousePosition(event);
+    if (!position) { return false; }
+    seekTo(position.time);
     showControls();
     return true;
   }
   if (!platform.isTV) {
+    timeline.addEventListener('mouseenter', previewFromMouse);
+    timeline.addEventListener('mousemove', previewFromMouse);
+    timeline.addEventListener('mouseleave', hideSeekPreview);
     // Own the complete mouse gesture. Firefox's native range track can step
     // on mouse-down and consume the later click, undoing click-only seeking.
     timeline.addEventListener('mousedown', function (event) {
