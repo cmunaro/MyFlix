@@ -18,6 +18,7 @@ from .discovery import DiscoveryCache
 from .engine_jobs import validate_limits
 from .monitoring import SeriesMonitor, episode_status, follow, lookup_status
 from .matroska import HeaderOverlay, seekable_header
+from .metadata import MetadataCache
 from .vibravid import VibraVid, VibraVidError
 
 
@@ -63,6 +64,8 @@ def create_app(config=None):
     app.extensions["monitor"] = monitor
     artwork_cache = ArtworkCache(database, vibravid)
     app.extensions["artwork"] = artwork_cache
+    metadata_cache = MetadataCache(database, vibravid)
+    app.extensions["metadata"] = metadata_cache
     discovery_cache = DiscoveryCache(database)
     app.extensions["discovery"] = discovery_cache
 
@@ -114,12 +117,12 @@ def create_app(config=None):
                 (media_id, settings(db).get("videos_path", ""))).fetchone()
         if not item:
             abort(404)
-        return dict(item)
+        return metadata_cache.decorate([dict(item)])[0]
 
     def decorate(item):
         item["poster"] = url_for("art", media_id=item["id"], kind="poster") if artwork_cache.path(item, "poster") else None
         item["backdrop"] = url_for("art", media_id=item["id"], kind="backdrop") if artwork_cache.path(item, "backdrop") else None
-        item["href"] = url_for("series", media_id=item["id"]) if item["series"] else url_for("watch", media_id=item["id"])
+        item["href"] = url_for("series", media_id=item["id"]) if item["series"] else url_for("title", media_id=item["id"])
         return item
 
     @app.get("/art/<int:media_id>/<any(poster,backdrop):kind>")
@@ -142,6 +145,7 @@ def create_app(config=None):
                 ORDER BY m.series COLLATE NOCASE,m.season,m.episode,m.title COLLATE NOCASE""",
                 (settings(db).get("videos_path", ""),)).fetchall()
         rows = [dict(row) for row in rows if query.casefold() in (row["title"] + " " + row["series"]).casefold()]
+        metadata_cache.decorate(rows)
         if view == "movies":
             rows = [r for r in rows if not r["series"]]
         elif view == "series":
@@ -222,11 +226,18 @@ def create_app(config=None):
                 WHERE m.root=? AND m.series=? AND available=1 AND hidden=0
                 ORDER BY season,episode,title""", (item["root"], item["series"])).fetchall()
         seasons = {}
-        for episode in episodes:
-            episode = decorate(dict(episode))
+        for episode in metadata_cache.decorate([dict(row) for row in episodes]):
+            episode = decorate(episode)
             episode["href"] = url_for("watch", media_id=episode["id"])
             seasons.setdefault(episode["season"], []).append(episode)
         return render_template("series.html", featured=item, seasons=seasons)
+
+    @app.get("/title/<int:media_id>")
+    def title(media_id):
+        item = decorate(get_media(media_id))
+        if item["series"]:
+            return redirect(url_for("series", media_id=media_id))
+        return render_template("title.html", featured=item)
 
     def playback(media_id):
         item = get_media(media_id)

@@ -18,8 +18,8 @@
     <p class="original"><b>M</b> {{ 'SERIES' if featured.series else 'FILM' }}</p>
     <h1>{{ featured.series or featured.title }}</h1>
     <p class="hero-kicker">{{ 'Pick up where you left off' if featured.position > 0 and not featured.watched else 'Your next great watch' }}</p>
-    <p class="hero-description">{% if featured.series %}Season {{ featured.season }} · Episode {{ featured.episode }}<br>{{ featured.title }}{% else %}Make tonight a movie night.<br>From your collection. Ready to play.{% endif %}</p>
-    <div class="hero-actions" data-focus-row><a class="button play" data-initial-focus href="{{ url_for('watch', media_id=featured.id) }}">▶ &nbsp;{{ 'Resume' if featured.position > 0 and not featured.watched else 'Play' }}</a>{% if featured.series %}<a class="button secondary" href="{{ url_for('series',media_id=featured.id) }}">ⓘ &nbsp; Episodes</a>{% endif %}</div>
+    <p class="hero-description">{% if featured.metadata.synopsis %}{{ featured.metadata.synopsis|truncate(260) }}{% elif featured.series %}Season {{ featured.season }} · Episode {{ featured.episode }}<br>{{ featured.title }}{% else %}Make tonight a movie night.<br>From your collection. Ready to play.{% endif %}</p>
+    <div class="hero-actions" data-focus-row><a class="button play" data-initial-focus href="{{ url_for('watch', media_id=featured.id) }}">▶ &nbsp;{{ 'Resume' if featured.position > 0 and not featured.watched else 'Play' }}</a><a class="button secondary" href="{{ featured.href }}">ⓘ &nbsp; {{ 'Episodes' if featured.series else 'Details' }}</a></div>
   </div>
   <span class="hero-label">YOUR COLLECTION</span>
 </section>

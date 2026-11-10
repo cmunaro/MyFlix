@@ -15,6 +15,7 @@ MyFlix turns a folder of films and series into a TV-friendly library with cover 
 - **Manage everything in one place.** Search providers, queue downloads, edit titles, organize series, and choose your library folder from the built-in admin interface.
 - **Keep up with series.** Follow a show to download missing unwatched episodes from existing and future seasons, or choose notification-only mode. Watched episodes and excluded seasons are skipped automatically.
 - **Covers without API keys.** MyFlix uses local artwork first and caches provider covers in the background when available.
+- **Details from your download source.** Film and series pages show available synopses, genres, cast, year, and episode details, with runtime read from the local video.
 - **Discover what to watch next.** SIMKL shelves show weekly most-watched series and home-released films, plus upcoming series and seasons. Hover or focus artwork to preview a trailer with sound when the browser permits it.
 - **A small stack to maintain.** One systemd service, SQLite, plain HTML/CSS/JavaScript, and native browser video. No containers, Redis, Node build, or playback transcoding service.
 
@@ -108,6 +109,16 @@ Detection uses Pillow and installed FFmpeg/FFprobe executables or the bundled en
 In **Library**, expand a series, then a season to see its episodes. Each episode row has **Mark as watched** (or **Mark as unwatched**) before its availability label; use it without opening the episode editor. Marking watched fills the red progress line in the TV library. Marking unwatched clears it and restarts playback from the beginning.
 
 Audio and subtitle selection appears when the browser exposes suitable native tracks. Subtitles start off for each video. External subtitle files are not imported.
+
+### Library title details
+
+Select a film to open its detail page, then choose **Play** or **Resume**. Series pages include available title information, season descriptions, and episode titles/descriptions. Continue watching and the featured Play action still open playback directly.
+
+A background worker retrieves metadata from the download provider and saves it in SQLite. Saved download requests and followed series identify the original source; for other library files, MyFlix accepts only a single provider search result matching the title, media type, and filename year when present. Ambiguous results remain without provider details. No external metadata service, account, or API key is added. StreamingCommunity title pages and providers exposing the bundled engine's common series scraper are supported; other providers contribute explicit metadata already present in their search payload. Availability/pricing notices are never used as synopses. Field coverage varies by provider, and unsupported fields are omitted.
+
+Metadata refreshes every seven days, or when a new library season or saved source is found. Provider failures retain saved details and retry after an hour. FFprobe reads each local video's actual runtime at low priority with a 15-second timeout; unavailable tools or unreadable files leave runtime blank and retry after an hour. Changes to the file path, size, or modification time invalidate the cached runtime. Neither providers nor FFprobe are called while serving web pages. Refresh the page after background processing to see new details.
+
+Catalog titles and watch history are never overwritten by this worker. Provider episode names supplement filename-inferred titles on series shelves; manually edited titles take precedence. Cached details survive restarts, rescans, removed files, and engine download-history cleanup. SQLite backups include these details.
 
 ### Discovery and trailers
 

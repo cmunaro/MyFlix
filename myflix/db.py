@@ -56,6 +56,16 @@ def initialize(path):
             CREATE TABLE IF NOT EXISTS artwork (
                 key TEXT PRIMARY KEY, retry_at INTEGER NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS title_metadata (
+                key TEXT PRIMARY KEY, details TEXT NOT NULL DEFAULT '{}',
+                source TEXT NOT NULL DEFAULT '{}', retry_at REAL NOT NULL DEFAULT 0
+            );
+            CREATE TABLE IF NOT EXISTS media_metadata (
+                media_id INTEGER PRIMARY KEY REFERENCES media(id),
+                title_key TEXT NOT NULL,
+                signature TEXT NOT NULL DEFAULT '', runtime REAL,
+                retry_at REAL NOT NULL DEFAULT 0
+            );
             CREATE TABLE IF NOT EXISTS discovery_feeds (
                 name TEXT PRIMARY KEY, payload TEXT NOT NULL DEFAULT '[]',
                 updated INTEGER NOT NULL DEFAULT 0, next_check INTEGER NOT NULL DEFAULT 0,

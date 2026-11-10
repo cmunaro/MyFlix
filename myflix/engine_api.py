@@ -4,6 +4,54 @@ import logging
 import os
 
 from .db import connect
+from .metadata import description, text, title_details
+
+
+def provider_metadata(api, media, numbers):
+    """Use provider data only; never invoke the engine's external metadata providers."""
+    raw = media.raw_data if isinstance(media.raw_data, dict) else {}
+    details = title_details(dict(raw, year=media.year or raw.get("year")))
+    scraper = None
+    if api.site_name == "streamingcommunity":
+        from VibraVid.services.streamingcommunity.scrapper import GetSerieInfo
+        language = media.provider_language or "it"
+        scraper = GetSerieInfo(url=f"{api.base_url}{language}", media_id=media.id,
+                               series_name=media.slug, year=media.year, provider_language=language,
+                               series_display_name=media.name, languages=[language])
+        scraper.collect_info_title()
+    elif not media.is_movie and callable(getattr(api, "_build_scraper", None)):
+        scraper = api._build_scraper(media)
+        if scraper is not None:
+            scraper.getNumberSeason()
+    if scraper is not None:
+        info = getattr(scraper, "title_info", None)
+        if isinstance(info, dict):
+            for key, value in title_details(info).items():
+                if value:
+                    details[key] = value
+        details["seasons"] = {}
+        available = {season.number: season for season in scraper.seasons_manager.seasons}
+        for number in numbers:
+            season = available.get(number)
+            if season is None:
+                continue
+            episodes = scraper.getEpisodeSeasons(number) or []
+            descriptions = {str(row.get("number")): description(row) for row in
+                            (info.get("seasons", []) if isinstance(info, dict) else []) if isinstance(row, dict)}
+            episode_details = {}
+            for index, episode in enumerate(episodes, 1):
+                raw_episode = episode if isinstance(episode, dict) else vars(episode)
+                mapper = getattr(api, "_map_episode", None)
+                mapped = mapper(episode, index) if callable(mapper) else episode
+                if type(mapped.number) is int and 0 <= mapped.number <= 9999:
+                    episode_details[str(mapped.number)] = {
+                        "title": text(getattr(mapped, "name", ""), 300),
+                        "synopsis": description(raw_episode)}
+            details["seasons"][str(number)] = {
+                "title": text(getattr(season, "name", ""), 300),
+                "synopsis": description(vars(season)) or descriptions.get(str(number), ""),
+                "episodes": episode_details}
+    return details
 
 
 def install_download_adapter(bot):
@@ -107,6 +155,27 @@ def install():
             return JsonResponse({"error": "Episode metadata unavailable"}, status=502)
 
     urlpatterns.insert(0, path("api/myflix/episodes/", episodes))
+
+    @csrf_exempt
+    @require_bot_secret
+    @require_POST
+    def metadata(request):
+        try:
+            body = _json_body(request)
+            numbers = body.get("seasons", [])
+            if (not isinstance(numbers, list) or len(numbers) > 100
+                    or any(type(number) is not int or not 0 <= number <= 9999 for number in numbers)):
+                return JsonResponse({"error": "Invalid seasons"}, status=400)
+            api = get_api(body["site"])
+            api._scraper_cache = {}
+            payload = body["payload"]
+            media = Entries(**{k: v for k, v in payload.items() if k in Entries.__dataclass_fields__})
+            return JsonResponse({"details": provider_metadata(api, media, numbers)})
+        except Exception:
+            logging.exception("Provider title metadata lookup failed")
+            return JsonResponse({"error": "Title metadata unavailable"}, status=502)
+
+    urlpatterns.insert(0, path("api/myflix/metadata/", metadata))
 
     @csrf_exempt
     @require_bot_secret

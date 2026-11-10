@@ -1,0 +1,15 @@
+{% extends 'tv.html' %}
+{% from 'title_details.html' import facts %}
+{% block title %}{{ featured.title }} · MyFlix{% endblock %}
+{% block content %}
+<section class="hero title-detail tone-{{ featured.id % 5 }}">
+  {% if featured.backdrop or featured.poster %}<img class="hero-image" src="{{ featured.backdrop or featured.poster }}" alt="">{% endif %}
+  <div class="hero-shade"></div>
+  <div class="hero-content">
+    <p class="original"><b>M</b> FILM</p><h1>{{ featured.title }}</h1>
+    {% if featured.metadata.synopsis %}<p class="hero-description">{{ featured.metadata.synopsis }}</p>{% endif %}
+    {{ facts(featured) }}
+    <div class="hero-actions" data-focus-row><a class="button play" data-initial-focus href="{{ url_for('watch',media_id=featured.id) }}">▶ &nbsp;{{ 'Resume' if featured.position > 0 and not featured.watched else 'Play' }}</a><a class="button secondary" href="/">← Back</a></div>
+  </div>
+</section>
+{% endblock %}

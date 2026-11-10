@@ -79,6 +79,10 @@ class ManagedEngineTest(unittest.TestCase):
             with self.assertRaisesRegex(VibraVidError, "HTTP 502"):
                 client.call("episodes", {})  # Installed adapter, no provider request.
             with self.assertRaisesRegex(VibraVidError, "HTTP 400"):
+                client.call("metadata", {"seasons": [True]})
+            with self.assertRaisesRegex(VibraVidError, "HTTP 502"):
+                client.call("metadata", {})  # Installed metadata adapter, no provider request.
+            with self.assertRaisesRegex(VibraVidError, "HTTP 400"):
                 client.call("retry_download", {})  # Priority adapter, no provider request.
             duplicate = ManagedEngine(self.app)
             with self.assertRaisesRegex(RuntimeError, "Another MyFlix instance"):

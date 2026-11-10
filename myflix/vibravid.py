@@ -18,7 +18,8 @@ class VibraVid:
     READ = {"sites": "api/bot/sites/", "status": "api/bot/status/",
             "queue": "api/get-downloads/?history=30"}
     WRITE = {name: f"api/bot/{name}/" for name in ("search", "seasons", "download", "cancel")}
-    INTERNAL = {"episodes": "api/myflix/episodes/", "retry_download": "api/myflix/retry-download/"}
+    INTERNAL = {"episodes": "api/myflix/episodes/", "metadata": "api/myflix/metadata/",
+                "retry_download": "api/myflix/retry-download/"}
 
     def __init__(self, address, secret):
         parts = urlsplit(address)
@@ -40,7 +41,7 @@ class VibraVid:
         try:
             # Episode metadata loads every season, which can exceed the normal
             # request budget for long-running series on a Raspberry Pi.
-            timeout = 300 if action == "episodes" else 30
+            timeout = 300 if action in ("episodes", "metadata") else 30
             with build_opener(NoRedirect()).open(request, timeout=timeout) as response:
                 raw = response.read(4 * 1024 * 1024 + 1)
             if len(raw) > 4 * 1024 * 1024:

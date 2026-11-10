@@ -1,0 +1,6 @@
+{% macro facts(item) %}
+{% if item.metadata.year or item.runtime_minutes or item.metadata.genres %}
+<p class="title-facts">{% if item.metadata.year %}<span>{{ item.metadata.year }}</span>{% endif %}{% if item.runtime_minutes %}<span>{{ item.runtime_minutes }} min{{ ' · this episode' if item.series else '' }}</span>{% endif %}{% if item.metadata.genres %}<span>{{ item.metadata.genres|join(' · ') }}</span>{% endif %}</p>
+{% endif %}
+{% if item.metadata.cast %}<p class="title-cast"><b>Cast:</b> {{ item.metadata.cast|join(', ') }}</p>{% endif %}
+{% endmacro %}
