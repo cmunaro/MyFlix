@@ -3,6 +3,18 @@
 .rail{gap:0}.tile{margin-right:18px}.tv-header{gap:0}.tv-header .wordmark{margin-right:40px}.tv-header nav{gap:0}.tv-header nav a{margin-right:28px}.profile{margin-left:25px}.hero-actions{gap:0}.hero-actions .button{margin-right:16px}@media(max-width:1000px){.tv-header .wordmark{margin-right:22px}.tv-header nav a{margin-right:15px}}@media(max-width:650px){.tv-header nav a{margin-right:8px}.profile{margin-left:20px}}
 .hero h1{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
 
+/* Keep the featured copy in flow and reserve room for the overlapping shelf. */
+.home-hero { height: auto; min-height: 80vh; max-height: none; padding: 155px 4% 150px; }
+.home-hero .hero-content { position: relative; top: auto; left: auto; }
+.home-hero .hero-actions { flex-wrap: wrap; }
+.home-hero .hero-actions .button { margin-bottom: 16px; }
+/* Percentage padding preserves 16:9 artwork on older TV browsers too. */
+.tile-picture { height: 0; padding-bottom: 56.25%; }
+.tile-picture > img, .tile-picture > .tile-art { position: absolute; top: 0; left: 0; width: 100%; height: 100%; }
+@media (min-width: 1700px) { .home-hero { padding-top: 185px; } }
+@media (max-width: 1000px) { .home-hero { padding-top: 135px; } }
+@media (max-width: 650px) { .home-hero { padding-top: 155px; padding-bottom: 110px; } }
+
 /* One transient player overlay; focus never overrides the visibility state. */
 .tv-remote, .tv-remote * { cursor: none !important; }
 .tv-remote { -webkit-user-select: none; user-select: none; -webkit-tap-highlight-color: transparent; }
