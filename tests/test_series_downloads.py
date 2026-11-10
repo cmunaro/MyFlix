@@ -480,3 +480,21 @@ class SeriesDownloadsTest(unittest.TestCase):
         self.provider.episodes.append({'season': 1, 'episode': 4})
         self.check()
         self.assertEqual([body['episodes'] for body in self.downloads()], ['2'])
+
+    def test_missing_episode_rows_expand_only_when_they_have_body_content(self):
+        self.prepare_library_episodes()
+        self.video(1)
+        with connect(self.database) as db:
+            db.execute("UPDATE discoveries SET error='Provider failed',state='failed' WHERE episode=3")
+        page = self.client.get('/admin?section=library').data.decode()
+        plain = '<div class="catalog-item" data-catalog-key="episode:1:1:2">'
+        self.assertIn(plain, page)
+        row = page.split(plain, 1)[1].split('</div>', 1)[0]
+        self.assertIn('catalog-row', row)
+        self.assertIn('catalog-download', row)
+        self.assertIn('catalog-watch', row)
+        self.assertNotIn('catalog-chevron', row)
+        self.assertNotIn('<summary', row)
+        self.assertIn('<details class="catalog-item" data-catalog-key="episode:1:1:1">', page)
+        self.assertIn('<details class="catalog-item" data-catalog-key="episode:1:1:3">', page)
+        self.assertIn('Provider failed', page)

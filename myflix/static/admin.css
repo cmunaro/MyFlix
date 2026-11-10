@@ -60,7 +60,7 @@
 .catalog-search label{flex:1;margin-right:20px}
 .catalog-search button,.catalog-search .button{margin-left:12px}
 .catalog-item{padding:0;border-bottom:1px solid #3b3e46}
-.catalog-item summary{display:flex;align-items:center;padding:24px 10px;list-style:none;position:relative;border-radius:5px}
+.catalog-item summary,.catalog-item .catalog-row{display:flex;align-items:center;padding:24px 10px;list-style:none;position:relative;border-radius:5px}
 .catalog-item summary::-webkit-details-marker{display:none}
 .catalog-item .catalog-title{float:none;flex:1;min-width:0;font-size:23px;font-weight:bold;line-height:1.4;color:#f2f3f5;margin-right:20px;overflow-wrap:break-word}
 .catalog-title small{font-size:16px;font-weight:normal;color:#a4aab4;margin-top:5px;line-height:1.5}
@@ -103,9 +103,9 @@
 .catalog-season>summary{display:flex;align-items:center;justify-content:space-between;padding:18px 10px;cursor:pointer;font-size:22px;font-weight:700;list-style:none}
 .catalog-season>summary::-webkit-details-marker{display:none}
 .catalog-season>summary>span+span{margin-left:20px;color:#aaa;font-size:16px;font-weight:normal}
-.catalog-item summary .catalog-watch{flex:none;margin-right:18px;padding:10px 14px;font-size:16px}
+.catalog-item summary .catalog-watch,.catalog-item .catalog-row .catalog-watch{flex:none;margin-right:18px;padding:10px 14px;font-size:16px}
 .catalog-watch[aria-disabled="true"]{opacity:.6}
-@media(max-width:650px){.catalog-item summary{flex-wrap:wrap}.catalog-item .catalog-title{flex-basis:100%;margin-bottom:14px}.catalog-item summary .catalog-watch{font-size:14px;margin-right:10px}}
+@media(max-width:650px){.catalog-item summary,.catalog-item .catalog-row{flex-wrap:wrap}.catalog-item .catalog-title{flex-basis:100%;margin-bottom:14px}.catalog-item summary .catalog-watch,.catalog-item .catalog-row .catalog-watch{font-size:14px;margin-right:10px}}
 
 .episode-picker{margin-top:18px}
 .episode-season{border-top:1px solid #424650;padding:12px 0}
@@ -120,7 +120,13 @@
 .series-download-actions button{flex:1;min-width:160px}
 .episode-picker input:disabled{opacity:.55;cursor:default}
 
-.catalog-item summary{flex-wrap:wrap;gap:12px}
+.catalog-item summary,.catalog-item .catalog-row{flex-wrap:wrap;gap:12px}
 .catalog-item .catalog-title{min-width:160px}
-.catalog-item summary .catalog-download{margin:0 12px;flex-shrink:0;padding:10px 14px;font-size:16px}
+.catalog-item summary .catalog-download,.catalog-item .catalog-row .catalog-download{margin:0 12px;flex-shrink:0;padding:10px 14px;font-size:16px}
 .catalog-state.is-missing{color:#d6bd8a}
+
+.season-actions{display:flex;align-items:center;flex-wrap:wrap;gap:12px}
+.season-actions form{display:flex;align-items:center;flex-wrap:wrap;gap:12px;margin:0}
+.season-controls .season-actions button{margin:0}
+.season-actions .checkbox{display:inline-flex;align-items:center;white-space:nowrap;min-height:60px;margin:0}
+.tv-admin .season-actions input[type=checkbox]{display:inline-block;padding:0;margin:0 12px 0 0}
