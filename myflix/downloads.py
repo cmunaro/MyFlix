@@ -200,6 +200,8 @@ class DownloadRetries:
                 "SELECT download_id FROM download_request_state WHERE root=? AND state='completed'", (root,))}
             retired = {}
             for row in retries:
+                if row["state"] == "cancelled":
+                    continue
                 source = json.loads(row["source"])
                 key = target_key(source)
                 retired[key] = max(retired.get(key, 0), source.get("start_time") or 0)
@@ -223,6 +225,9 @@ class DownloadRetries:
                 if key not in hidden and not retried:
                     unique[target_key(item)] = item
             queue["history"] = list(unique.values())
+            for item in queue["history"]:
+                if item.get("status") == "failed":
+                    item["cancel_id"] = "failed:" + failure_key(item)
             # Selected episodes wait durably in MyFlix until an engine slot opens.
             queue.setdefault("scheduled", []).extend({"id": f"selection:{row['subscription_id']}:{row['season']}:{row['episode']}", "title": row["series"], "site": row["site"],
                 "season": row["season"], "episode": row["episode"], "status": "Queued", "priority": False}
@@ -233,6 +238,7 @@ class DownloadRetries:
                 "SELECT series,error FROM subscriptions WHERE root=? AND mode IN ('auto','baseline') AND error!=''", (root,))]
 
             queue["retrying"] = [{**json.loads(row["source"]), "id": "retry:" + str(row["id"]),
+                                  "cancel_id": "retry:" + str(row["id"]) if row["state"] == "pending" else None,
                                   "status": "Priority retry queued" if row["state"] == "pending" else "Request unconfirmed — check queue",
                                   "priority": True, "error": row["error"]}
                                  for row in retries if row["state"] in ("pending", "submitting", "uncertain")]
@@ -419,6 +425,41 @@ class DownloadRetries:
         with connect(self.database) as db:
             return bool(db.execute("SELECT 1 FROM download_retries WHERE root=? AND state='pending' LIMIT 1",
                                    (settings(db)["videos_path"],)).fetchone())
+
+    def cancel_local(self, queue, identity):
+        """Retire a failed attempt or a retry that has not reached the engine."""
+        queue = self.present(queue)
+        item = next((job for group in ("history", "retrying") for job in queue[group]
+                     if job.get("cancel_id") == identity), None)
+        with connect(self.database) as db:
+            db.execute("BEGIN IMMEDIATE")
+            root = settings(db)["videos_path"]
+            if not item:
+                # Repeated cancellation of an already retired attempt is safe.
+                row = db.execute("SELECT 1 FROM download_retries WHERE root=? AND state='cancelled' AND "
+                                 + ("source_key=?" if identity.startswith("failed:") else "id=?"),
+                                 (root, identity.split(":", 1)[1])).fetchone()
+                if row:
+                    return {"cancelled": True}
+                raise ValueError("This download may have started. Refresh the queue before cancelling it")
+            if identity.startswith("failed:"):
+                db.execute("""INSERT INTO download_retries(root,source_key,source,body,state)
+                    VALUES(?,?,?,'{}','cancelled') ON CONFLICT(root,source_key)
+                    DO UPDATE SET state='cancelled',failure=''""",
+                    (root, failure_key(item), json.dumps(item)))
+            else:
+                changed = db.execute("UPDATE download_retries SET state='cancelled' WHERE root=? AND id=? AND state='pending'",
+                                     (root, identity.split(":", 1)[1]))
+                if not changed.rowcount:
+                    raise ValueError("This retry may have started. Refresh the queue before cancelling it")
+            db.execute("UPDATE download_request_state SET state='cancelled' WHERE root=? AND download_id=?",
+                       (root, item.get("id", "")))
+            for subscription in db.execute("SELECT * FROM subscriptions WHERE root=?", (root,)):
+                if self.matches(item, subscription):
+                    db.execute("""UPDATE discoveries SET state='dismissed',error='' WHERE subscription_id=?
+                        AND season=? AND episode=? AND state IN ('failed','retry_pending')""",
+                        (subscription["id"], item.get("season"), item.get("episode")))
+        return {"cancelled": True}
 
     def cancel_pending(self, queue, download_id):
         job = next((item for group in ("active", "scheduled") for item in queue.get(group, [])

@@ -976,6 +976,50 @@ class MonitoringTest(unittest.TestCase):
         self.assertFalse(any(a == "retry_download" for a, _ in self.provider.calls))
         self.assertEqual([r["state"] for r in self.discoveries()], ["dismissed", "dismissed"])
 
+    def cancel_download(self, identity):
+        with patch.object(self.app.extensions["vibravid"], "call", side_effect=self.provider.call):
+            return self.post("/admin/vibravid/cancel", body={"download_id": identity})
+
+    def test_failed_download_cancellation_is_durable_and_prevents_restart_retry(self):
+        self.failed_downloads()
+        self.monitor.reconcile_queue(copy.deepcopy(self.provider.queue))
+        queue = self.monitor.retries.present(copy.deepcopy(self.provider.queue))
+        identity = queue["history"][0]["cancel_id"]
+        self.assertEqual(self.client.post("/admin/vibravid/cancel", json={"download_id": identity}).status_code, 403)
+        self.assertTrue(self.cancel_download(identity).json["cancelled"])
+        self.assertTrue(self.cancel_download(identity).json["cancelled"])
+        self.assertEqual([row["state"] for row in self.discoveries()], ["dismissed", "failed"])
+        initialize(self.database)
+        queue = self.monitor.retries.present(copy.deepcopy(self.provider.queue))
+        self.assertEqual([item["episode"] for item in queue["history"]], [2])
+        self.assertEqual(SeriesMonitor(self.database, self.provider).recover_startup()["queued"], 1)
+        self.assertFalse(any(action == "cancel" for action, _ in self.provider.calls))
+
+    def test_waiting_retry_can_be_cancelled_and_uncertain_retry_requires_review(self):
+        self.failed_downloads(1)
+        self.retry_all()
+        queue = self.monitor.retries.present(copy.deepcopy(self.provider.queue))
+        identity = queue["retrying"][0]["cancel_id"]
+        self.assertTrue(self.cancel_download(identity).json["cancelled"])
+        self.assertFalse(self.monitor.retries.pending())
+        self.assertEqual(self.discoveries()[0]["state"], "dismissed")
+        self.assertEqual(self.monitor.retries.present(copy.deepcopy(self.provider.queue))["retrying"], [])
+        with connect(self.database) as db:
+            db.execute("UPDATE download_retries SET state='uncertain'")
+        self.assertEqual(self.cancel_download(identity).status_code, 400)
+        self.assertIsNone(self.monitor.retries.present(copy.deepcopy(self.provider.queue))["retrying"][0]["cancel_id"])
+
+    def test_cancel_legacy_failure_without_engine_id_and_validate_identity(self):
+        self.provider.queue["history"] = [{"title": "Legacy film", "status": "failed"}]
+        queue = self.monitor.retries.present(copy.deepcopy(self.provider.queue))
+        self.assertTrue(self.cancel_download(queue["history"][0]["cancel_id"]).json["cancelled"])
+        self.assertEqual(self.monitor.retries.present(copy.deepcopy(self.provider.queue))["history"], [])
+        self.provider.queue["history"].append({"id": "new-attempt", "title": "Legacy film", "status": "failed"})
+        visible = self.monitor.retries.present(copy.deepcopy(self.provider.queue))["history"]
+        self.assertEqual([item["id"] for item in visible], ["new-attempt"])
+        self.assertEqual(self.cancel_download("failed:bad").status_code, 400)
+        self.assertEqual(self.cancel_download("retry:bad").status_code, 400)
+
     def test_manual_film_request_can_be_bulk_retried_without_following(self):
         self.provider.calls.clear()
         request = {"site": "example", "payload": {"id": "film-1", "name": "Film", "is_movie": True, "type": "movie"}}

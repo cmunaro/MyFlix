@@ -67,6 +67,7 @@ function screen(tv = true) {
   for (const id of ['download-message', 'download-connection', 'download-results', 'queue-message', 'download-queue']) add(root, 'div', {id});
   const refresh = add(root, 'button', {id: 'refresh-downloads'}, {left: 740, top: 300});
   add(root, 'button', {id: 'retry-failed-downloads', hidden: ''}, {left: 500, top: 300});
+  add(root, 'button', {id: 'cancel-all-downloads', hidden: ''}, {left: 620, top: 300});
   const meta = {content: 'csrf-token'};
   document = {
     body, documentElement: new Element('html'), activeElement: body,
@@ -279,8 +280,8 @@ const errors = screen(); errors.downloads();
 errors.reply('sites', {groups: []});
 errors.reply('status', {slots: {active: 0, max: 4}, queued: 0});
 const failedQueue = {active: [], scheduled: [], history: [
-  {id: 'failed-1', title: 'Show', season: 1, episode: 2, status: 'failed', progress: 100, speed: '29.55M/s', error: 'Merge failed <script>bad</script>'},
-  {id: 'failed-2', title: 'Show', season: 2, episode: 1, status: 'failed'},
+  {id: 'failed-1', cancel_id: 'failed:first', title: 'Show', season: 1, episode: 2, status: 'failed', progress: 100, speed: '29.55M/s', error: 'Merge failed <script>bad</script>'},
+  {id: 'failed-2', cancel_id: 'failed:second', title: 'Show', season: 2, episode: 1, status: 'failed'},
   {title: 'Completed title', status: 'completed'}, {title: 'Cancelled title', status: 'cancelled'}
 ]};
 errors.reply('queue', failedQueue);
@@ -292,7 +293,7 @@ assert(failedText.includes('Merge failed <script>bad</script>'), 'error is rende
 assert(failedText.includes('Download failed; the engine supplied no details.'));
 assert(!failedText.includes('Completed title') && !failedText.includes('Cancelled title'));
 assert(!failedText.includes('Nothing downloading'), 'failure is visible instead of an empty queue');
-assert(!errors.el('download-queue').querySelector('button'), 'terminal jobs cannot be cancelled');
+assert.equal(errors.el('download-queue').querySelectorAll('button').length, 2, 'failed attempts can be cancelled');
 assert(!errors.el('download-queue').querySelector('progress'), '100% failed jobs are not shown as completed progress');
 assert(!errors.el('download-queue').querySelector('script'), 'provider errors cannot inject HTML');
 errors.el('download-queue').querySelector('a').focus();
@@ -300,6 +301,17 @@ errors.intervals[0](); errors.reply('queue', failedQueue);
 assert.equal(errors.document.activeElement, errors.el('download-queue').querySelector('a'), 'failed episode review retains focus');
 assert.equal(errors.document.activeElement.href, '/admin?section=downloads&q=Show');
 errors.reply('status', {slots: {active: 0, max: 4}, queued: 0});
+
+const failedCancel = errors.el('download-queue').querySelector('button');
+failedCancel.focus(); failedCancel.click(); failedCancel.click();
+assert.equal(errors.pending.filter(xhr => xhr.action === 'cancel').length, 1);
+const cancelledFailure = errors.reply('cancel', {cancelled: true});
+assert.equal(cancelledFailure.body.download_id, 'failed:first');
+assert.equal(cancelledFailure.headers['X-CSRF-Token'], 'csrf-token');
+errors.reply('queue', failedQueue);
+errors.reply('status', {slots: {active: 0, max: 4}, queued: 0});
+assert.equal(errors.document.activeElement, errors.el('download-queue').querySelector('button'), 'failed cancellation retains focus during refresh');
+
 const retryAll = errors.el('retry-failed-downloads');
 assert(!retryAll.hidden, 'bulk retry is available when failures are shown');
 retryAll.focus(); retryAll.click(); retryAll.click();
@@ -318,6 +330,34 @@ assert.equal(errors.document.activeElement, errors.refresh, 'focus moves to Refr
 assert(errors.el('queue-message').textContent.includes('Queued 2 priority retries.'), 'bulk retry result survives refresh');
 retryAll.click(); errors.reply('retry-failed', {error: 'Connection uncertain. Check queue.'}, 502);
 assert(!errors.pending.some(xhr => xhr.action === 'retry-failed'), 'failed bulk request is not automatically retried');
+const cancelAll = errors.el('cancel-all-downloads');
+errors.refresh.click();
+errors.reply('queue', {active: [{id: 'active', title: 'Film'}], scheduled: [{id: 'selection:1:1:2', title: 'Show'}],
+  history: [failedQueue.history[0]], retrying: [{id: 'retry:1', cancel_id: 'retry:1', title: 'Show'}]});
+errors.reply('status', {slots: {active: 1, max: 4}, queued: 1});
+assert(!cancelAll.hidden, 'cancel all appears beside retry for current jobs');
+cancelAll.focus(); cancelAll.click(); cancelAll.click(); retryAll.click();
+assert.equal(errors.pending.filter(xhr => xhr.action === 'cancel').length, 1, 'bulk cancellations run sequentially');
+assert(!errors.pending.some(xhr => xhr.action === 'retry-failed'), 'retry cannot race bulk cancellation');
+for (const identity of ['retry:1', 'active', 'selection:1:1:2', 'failed:first']) {
+  const request = errors.reply('cancel', {cancelled: true});
+  assert.equal(request.body.download_id, identity);
+  assert.equal(request.headers['X-CSRF-Token'], 'csrf-token');
+}
+errors.reply('queue', {active: [], scheduled: [], history: [], retrying: []});
+errors.reply('status', {slots: {active: 0, max: 4}, queued: 0});
+assert(cancelAll.hidden);
+assert.equal(errors.document.activeElement, errors.refresh);
+assert(errors.el('queue-message').textContent.includes('all current downloads'));
+errors.refresh.click();
+errors.reply('queue', {active: [{id: 'active'}], scheduled: [{id: 'queued'}], history: []});
+errors.reply('status', {slots: {active: 1, max: 4}, queued: 1});
+cancelAll.click(); errors.reply('cancel', {error: 'Connection uncertain. Check queue.'}, 502);
+assert(!errors.pending.some(xhr => xhr.action === 'cancel'), 'bulk cancellation stops after an uncertain error');
+errors.reply('queue', {active: [{id: 'active'}], scheduled: [{id: 'queued'}], history: []});
+errors.reply('status', {slots: {active: 1, max: 4}, queued: 1});
+assert(errors.el('queue-message').textContent.includes('Connection uncertain'));
+
 console.log('Admin behavior passed: remote fields and Back, native desktop inputs, current downloads and episode failures, refresh focus, episode selection, CSRF, and mutation guards');
 
 const catalog = screen();

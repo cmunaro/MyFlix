@@ -95,6 +95,8 @@ MyFlix checks the season list every four hours while running and loads episodes 
 
 Selected episodes stay in **Current downloads** while waiting for an engine slot, downloading, processing, publishing, and entering the catalog. They leave the active queue only after they are ready to play. Queued selections can be cancelled before the engine starts them. Provider-check errors and download failures appear in Downloads. If a request is unconfirmed, inspect the queue before trying again; uncertain engine submissions are never retried automatically.
 
+**Cancel download** clears a failed attempt durably, including its automatic restart retry. **Cancel all downloads**, beside Retry all, cancels the current active jobs, queued selections, waiting priority retries, and failed attempts. Cancellation includes related series episodes. Requests run one at a time and stop on an error so you can refresh and review the remaining queue. Unconfirmed retry submissions still require queue review. Automatic checks for future episodes continue.
+
 **Retry all failed downloads** moves eligible failures into a durable priority queue ahead of ordinary waiting jobs. Running jobs finish normally. A retry that fails again returns with its new error. Old failures disappear once the exact episode or film is verified in the configured library. After a restart, MyFlix recovers confirmed failures and acknowledged interrupted film or exact-episode downloads after a successful library scan and queue read. Existing files, watched/excluded episodes, completed or cancelled requests, unavailable episodes, and queued work are skipped. Legacy ranges and uncertain requests still require queue review.
 
 ## Use your TV remote

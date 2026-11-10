@@ -771,6 +771,14 @@ def create_app(config=None):
                     result = monitor.retries.submit(vibravid, body)
             elif action == "cancel" and body["download_id"].startswith("selection:"):
                 result = monitor.cancel_selection(body["download_id"])
+            elif action == "cancel" and body["download_id"].startswith(("failed:", "retry:")):
+                identity = body["download_id"]
+                if not re.fullmatch(r"failed:[0-9a-f]{64}|retry:[0-9]{1,19}", identity):
+                    abort(400, "Select a failed download or queued retry")
+                with monitor.download_lock:
+                    queue = vibravid.call("queue")
+                    monitor.reconcile_queue(queue)
+                    result = monitor.retries.cancel_local(queue, identity)
             elif action == "cancel":
                 with monitor.download_lock:
                     monitor.retries.cancel_pending(vibravid.call("queue"), body["download_id"])

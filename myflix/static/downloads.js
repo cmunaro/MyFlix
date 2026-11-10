@@ -13,6 +13,10 @@
   var cancelPending = {};
   var retryButton = document.getElementById('retry-failed-downloads');
   var retryBusy = false;
+  var cancelAllButton = document.getElementById('cancel-all-downloads');
+  var cancelAllBusy = false;
+  var cancelTargets = [];
+  var unconfirmedDownloads = false;
   function node(tag, text, className) {
     var el = document.createElement(tag);
     if (text !== undefined) { el.textContent = text; }
@@ -43,7 +47,7 @@
     xhr.send(body === null ? null : JSON.stringify(body));
   }
   function refreshQueue(notice) {
-    if (queueBusy) { return; }
+    if (queueBusy || cancelAllBusy) { return; }
     queueBusy = true;
     api('queue', null, function (error, data) {
       queueBusy = false;
@@ -56,6 +60,8 @@
       container.textContent = '';
       var total = 0;
       var failures = (data.history || []).filter(function (item) { return item.status === 'failed'; });
+      cancelTargets = [];
+      unconfirmedDownloads = (data.retrying || []).some(function (item) { return !item.cancel_id; });
       retryButton.hidden = !failures.length;
       if (retryButton.hidden && focused === retryButton) { document.getElementById('refresh-downloads').focus(); }
       ['retrying', 'active', 'scheduled', 'failed'].forEach(function (group) {
@@ -86,22 +92,24 @@
             var bar = node('progress'); bar.max = 100; bar.value = Math.max(0, Math.min(100, progress)); bar.setAttribute('aria-label', 'Download progress'); info.appendChild(bar);
           }
           row.appendChild(info);
-          if (item.id && (group === 'active' || group === 'scheduled')) {
-            var cancel = node('button', 'Cancel' + (item.series_name ? ' series' : ' download'));
+          var cancelId = item.cancel_id || ((group === 'active' || group === 'scheduled') ? item.id : null);
+          if (cancelId) {
+            cancelTargets.push(cancelId);
+            var cancel = node('button', 'Cancel' + (group !== 'failed' && item.series_name ? ' series' : ' download'));
             cancel.type = 'button';
-            cancel.setAttribute('data-job-id', item.id);
+            cancel.setAttribute('data-job-id', cancelId);
             cancel.setAttribute('aria-label', 'Cancel ' + (item.title || 'download'));
-            if (cancelPending[item.id]) { cancel.setAttribute('aria-disabled', 'true'); }
-            if (String(item.id) === focusedJob) { restore = cancel; }
+            if (cancelPending[cancelId] || cancelAllBusy) { cancel.setAttribute('aria-disabled', 'true'); }
+            if (String(cancelId) === focusedJob) { restore = cancel; }
             cancel.onclick = function () {
-              if (cancelPending[item.id]) { return; }
-              cancelPending[item.id] = true;
+              if (cancelPending[cancelId] || cancelAllBusy || retryBusy) { return; }
+              cancelPending[cancelId] = true;
               cancel.setAttribute('aria-disabled', 'true');
-              api('cancel', {download_id: item.id}, function (err) {
-                queueMessage.textContent = err || 'Cancellation requested, including related episodes.';
-                delete cancelPending[item.id];
+              api('cancel', {download_id: cancelId}, function (err) {
+                queueMessage.textContent = err || (group === 'failed' ? 'Failed download cancelled.' : 'Cancellation requested, including related episodes.');
+                delete cancelPending[cancelId];
                 cancel.removeAttribute('aria-disabled');
-                if (!err) { refreshQueue(); }
+                if (!err) { refreshQueue(queueMessage.textContent); }
               });
             };
             row.appendChild(cancel);
@@ -110,6 +118,8 @@
         });
         container.appendChild(section);
       });
+      cancelAllButton.hidden = !cancelTargets.length;
+      if (cancelAllButton.hidden && focused === cancelAllButton) { document.getElementById('refresh-downloads').focus(); }
       (data.checks || []).forEach(function (check) {
         total += 1;
         container.appendChild(node('p', 'Could not check new episodes for ' + check.series + ': ' + check.error, 'error'));
@@ -312,7 +322,7 @@
   });
   document.getElementById('refresh-downloads').onclick = refreshQueue;
   retryButton.onclick = function () {
-    if (retryBusy) { return; }
+    if (retryBusy || cancelAllBusy || Object.keys(cancelPending).length) { return; }
     retryBusy = true;
     retryButton.setAttribute('aria-disabled', 'true');
     api('retry-failed', {}, function (error, data) {
@@ -324,6 +334,27 @@
         refreshQueue(queueMessage.textContent);
       }
     });
+  };
+  cancelAllButton.onclick = function () {
+    if (cancelAllBusy || retryBusy || Object.keys(cancelPending).length || !cancelTargets.length) { return; }
+    var targets = cancelTargets.slice();
+    var unconfirmed = unconfirmedDownloads;
+    cancelAllBusy = true;
+    cancelAllButton.setAttribute('aria-disabled', 'true');
+    retryButton.setAttribute('aria-disabled', 'true');
+    function next() {
+      var identity = targets.shift();
+      queueMessage.textContent = 'Cancelling downloads…';
+      api('cancel', {download_id: identity}, function (error) {
+        if (!error && targets.length) { next(); return; }
+        cancelAllBusy = false;
+        cancelAllButton.removeAttribute('aria-disabled');
+        retryButton.removeAttribute('aria-disabled');
+        queueMessage.textContent = error || (unconfirmed ? 'Cancellation requested. Unconfirmed download requests require queue review.' : 'Cancellation requested for all current downloads.');
+        refreshQueue(queueMessage.textContent);
+      });
+    }
+    next();
   };
   refreshQueue();
   window.setInterval(function () { if (!document.hidden) { refreshQueue(); } }, 15000);
