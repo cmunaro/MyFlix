@@ -88,6 +88,8 @@ Acknowledged film and single-episode downloads interrupted by a reboot or servic
 
 ## Use your TV remote
 
+The home page opens at the top with the featured **Play** or **Resume** button selected. Series pages retain the last selected episode when you return.
+
 Desktop browsers with a mouse or trackpad show arrows over blurred panels when you hover a thumbnail shelf, including season episode lists. Each click browses a page of titles with some overlap. The arrows also support keyboard focus. TV browsers, including TVs with a connected mouse, and touch-only browsers do not receive these controls. During desktop playback, double-click the video to enter or exit fullscreen. Move the mouse to reveal the controls, then click anywhere on the progress bar to jump to that time; dragging the seek handle also works. You can seek beyond the data already buffered in the browser: the browser requests that part of the file immediately, and a Loading overlay stays visible until the requested frame is ready. Paused playback stays paused after seeking.
 
 | Input | Action |

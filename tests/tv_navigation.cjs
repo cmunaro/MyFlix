@@ -51,10 +51,10 @@ function screen(storage = {}, height = 900, options = {}) {
     createElement() { const el = element(); el.tagName = 'BUTTON'; return el; },
     getElementById() { return null; },
     addEventListener(name, fn) { listeners[name] = fn; },
-    querySelector(selector) { return selector === '[data-initial-focus]' ? hero : selector === '.tv-header a' ? header : null; },
+    querySelector(selector) { return selector === '.home-hero [data-initial-focus]' ? (options.homeHero === false ? null : hero) : selector === '[data-initial-focus]' ? hero : selector === '.tv-header a' ? header : null; },
     querySelectorAll(selector) { return selector === '[data-rail]' ? rails : [header, hero, ...rails.flatMap(r => r.cards)]; }
   };
-  vm.runInNewContext(code, {document, window, navigator: {userAgent: options.userAgent || ''}, location: {pathname: '/', search: ''}, sessionStorage: {
+  vm.runInNewContext(code, {document, window, navigator: {userAgent: options.userAgent || ''}, location: {pathname: options.pathname || '/', search: ''}, sessionStorage: {
     getItem(key) { return storage[key] || null; }, setItem(key, value) { storage[key] = value; }
   }});
   return {document, window, rails, hero, storage,
@@ -73,10 +73,19 @@ ui.key(40);
 assert.equal(ui.document.activeElement, ui.rails[1].cards[3], 'Down clamps selection on a shorter shelf');
 ui.key(38);
 assert.equal(ui.document.activeElement, ui.rails[0].cards[6], 'Up restores the previous shelf selection');
-const restored = screen(ui.storage);
-assert.equal(restored.document.activeElement, restored.rails[0].cards[6], 'return restores browsing focus');
+const restored = screen({...ui.storage});
+assert.equal(restored.document.activeElement, restored.hero, 'home Resume wins over a saved Continue watching card');
+assert.equal(restored.window.pageYOffset, 0, 'home loads at the hero instead of scrolling to a shelf');
+restored.key(40);
 restored.key(38);
-assert.equal(restored.document.activeElement, restored.hero, 'Up from first shelf returns to featured Play');
+assert.equal(restored.document.activeElement, restored.hero, 'Up from first shelf returns to featured Resume');
+const withoutHero = screen(ui.storage, 900, {homeHero: false});
+assert.equal(withoutHero.document.activeElement, withoutHero.rails[0].cards[6], 'home without a featured title retains shelf restoration');
+const series = screen({}, 900, {pathname: '/series/1'});
+series.key(40);
+series.key(39);
+const seriesReturn = screen(series.storage, 900, {pathname: '/series/1'});
+assert.equal(seriesReturn.document.activeElement, seriesReturn.rails[0].cards[1], 'series pages retain saved episode focus');
 const discovery = screen();
 discovery.rails[0].cards[0].setAttribute('data-discovery', '');
 discovery.rails[0].cards[0].setAttribute('data-media-id', 'discover-tv-7');

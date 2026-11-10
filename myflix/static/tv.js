@@ -221,7 +221,9 @@
   });
   if (!document.getElementById('player') && (document.body.className.indexOf('tv-browse') !== -1 || adminPage)) {
     var target = document.querySelector('[autofocus]') || document.querySelector('[data-initial-focus]') || document.querySelector('[data-card]');
-    if (!document.querySelector('[autofocus]')) {
+    var homeAction = location.pathname === '/' && document.querySelector('.home-hero [data-initial-focus]');
+    // Home opens on Play/Resume; saved shelf positions belong to browsing pages.
+    if (!document.querySelector('[autofocus]') && !homeAction) {
       try {
         var saved = JSON.parse(sessionStorage.getItem('myflix-focus:' + location.pathname + location.search));
         if (saved) {
@@ -231,6 +233,7 @@
       } catch (e) { /* Use the featured Play action when state cannot be restored. */ }
     }
     focus(target);
+    if (homeAction && target === homeAction) { window.scrollTo(0, 0); }
   }
   desktopShelfArrows();
 }());
