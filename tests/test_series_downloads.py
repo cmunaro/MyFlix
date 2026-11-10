@@ -1,4 +1,5 @@
 import json
+import html
 import os
 import tempfile
 import time
@@ -215,3 +216,267 @@ class SeriesDownloadsTest(unittest.TestCase):
             self.assertNotIn(b'>Following<', page)
             self.assertNotIn(b'following.js', page)
             self.assertNotIn(b'Notify only', page)
+
+    def season_action(self, action):
+        with self.client.session_transaction() as session:
+            csrf = session['csrf']
+        return self.client.post('/admin/season', data={'csrf': csrf, 'series': 'Show', 'season': '1', 'action': action})
+
+    def prepare_library_episodes(self):
+        self.provider.episodes = [{'season': 1, 'episode': n, 'title': 'Provider episode ' + str(n)} for n in (1, 2, 3)]
+        self.inspect()
+        self.start(only_new=True)
+
+    def test_library_lists_missing_episodes_without_creating_fake_media(self):
+        self.prepare_library_episodes()
+        self.video(1)
+        calls = len(self.provider.calls)
+        page = html.unescape(self.client.get('/admin?section=library').data.decode())
+        self.assertEqual(len(self.provider.calls), calls, 'library requests must use cached provider metadata')
+        self.assertIn('3 episodes · 1 downloaded', page)
+        self.assertIn('Downloaded', page)
+        self.assertIn('Not downloaded', page)
+        self.assertIn('Provider episode 2', page)
+        self.assertIn('/admin/downloads/series/1/1/2', page)
+        self.assertIn('Mark all as watched', page)
+        self.assertIn('>Download all</button>', page)
+        self.assertIn('Download new episodes', page)
+        self.assertNotIn('>Auto download<', page)
+        self.assertNotIn('Mark season watched &amp; exclude', page)
+        with connect(self.database) as db:
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM media').fetchone()[0], 1)
+        self.assertIn('Provider episode 3', self.client.get('/admin?section=library&q=Provider+episode+3').data.decode())
+        self.assertNotIn('Provider episode 3', self.client.get('/admin?section=removed').data.decode())
+
+    def test_library_shows_series_with_no_downloaded_episodes(self):
+        self.prepare_library_episodes()
+        page = self.client.get('/admin?section=library').data.decode()
+        self.assertIn('Show', page)
+        self.assertIn('3 episodes · 0 downloaded', page)
+        self.assertNotIn('Your collection starts here', page)
+
+    def test_library_download_button_queues_exact_episode_idempotently(self):
+        self.prepare_library_episodes()
+        url = '/admin/downloads/series/1/1/2'
+        self.assertEqual(self.client.post(url, json={}).status_code, 403)
+        self.assertTrue(self.post(url, {}).json['queued'])
+        self.assertTrue(self.post(url, {}).json['queued'])
+        page = self.client.get('/admin?section=library').data.decode()
+        self.assertIn('Queued / downloading', page)
+        self.monitor.tick()
+        self.assertEqual([body['episodes'] for body in self.downloads()], ['2'])
+        self.video(2)
+        self.assertEqual(self.post(url, {}).status_code, 400)
+        other = self.base / 'other'
+        other.mkdir()
+        with connect(self.database) as db:
+            db.execute("UPDATE settings SET value=? WHERE key='videos_path'", (str(other),))
+        self.assertEqual(self.post('/admin/downloads/series/1/1/3', {}).status_code, 400)
+
+    def test_mark_all_watched_keeps_download_policy_and_future_episodes_independent(self):
+        self.prepare_library_episodes()
+        self.video(1)
+        self.assertEqual(self.season_action('watched').status_code, 302)
+        with connect(self.database) as db:
+            self.assertEqual(tuple(db.execute('SELECT watched,excluded FROM season_state').fetchone()), (0, 0))
+            self.assertEqual([row[0] for row in db.execute('SELECT watched FROM discoveries')], [1, 1, 1])
+            self.assertEqual(db.execute('SELECT watched FROM progress').fetchone()[0], 1)
+        self.provider.episodes.append({'season': 1, 'episode': 4})
+        self.check()
+        self.assertEqual([body['episodes'] for body in self.downloads()], ['4'], 'marking known episodes watched must not mark future releases watched')
+        self.assertIn('Mark all as watched', self.client.get('/admin?section=library').data.decode())
+        self.season_action('exclude')
+        self.season_action('watched')
+        self.season_action('unwatched')
+        with connect(self.database) as db:
+            self.assertEqual(db.execute('SELECT excluded FROM season_state').fetchone()[0], 1)
+            self.assertTrue(all(row[0] == 0 for row in db.execute('SELECT watched FROM discoveries')))
+        page = html.unescape(self.client.get('/admin?section=library').data.decode())
+        self.assertIn('>Download all</button>', page)
+        self.assertNotIn('>Auto download<', page)
+
+    def test_season_download_toggle_and_explicit_episode_override(self):
+        self.prepare_library_episodes()
+        self.season_action('exclude')
+        self.provider.episodes.append({'season': 1, 'episode': 4})
+        self.check()
+        self.assertEqual(self.downloads(), [])
+        self.assertTrue(self.post('/admin/downloads/series/1/1/2', {}).json['queued'])
+        self.monitor.tick()
+        self.assertEqual([body['episodes'] for body in self.downloads()], ['2'])
+        self.season_action('include')
+        self.monitor.tick()
+        self.assertEqual([body['episodes'] for body in self.downloads()], ['2', '4'])
+        page = html.unescape(self.client.get('/admin?section=library').data.decode())
+        self.assertIn('>Download all</button>', page)
+        self.assertNotIn('>Auto download<', page)
+
+    def test_episode_history_survives_import_and_explicit_unwatched_updates_it(self):
+        self.prepare_library_episodes()
+        self.season_action('watched')
+        self.video(2)
+        with connect(self.database) as db:
+            media_id = db.execute('SELECT id FROM media').fetchone()[0]
+            self.assertEqual(db.execute('SELECT watched FROM progress').fetchone()[0], 1)
+        self.post('/admin/media/' + str(media_id) + '/watched', {'watched': False})
+        with connect(self.database) as db:
+            self.assertEqual(db.execute('SELECT watched FROM discoveries WHERE episode=2').fetchone()[0], 0)
+
+    def test_library_revision_changes_for_missing_episodes_and_queue_state(self):
+        self.prepare_library_episodes()
+        before = self.client.get('/api/catalog/ids').json
+        self.provider.episodes.append({'season': 1, 'episode': 4})
+        self.check()
+        after = self.client.get('/api/catalog/ids').json
+        self.assertEqual(before['ids'], after['ids'])
+        self.assertNotEqual(before['revision'], after['revision'])
+        self.post('/admin/downloads/series/1/1/2', {})
+        self.assertNotEqual(after['revision'], self.client.get('/api/catalog/ids').json['revision'])
+
+    def test_unavailable_and_uncertain_episodes_cannot_be_queued(self):
+        self.prepare_library_episodes()
+        with connect(self.database) as db:
+            db.execute('UPDATE discoveries SET listed=0 WHERE episode=2')
+            db.execute("UPDATE discoveries SET state='uncertain' WHERE episode=3")
+        for episode in (2, 3):
+            self.assertEqual(self.post('/admin/downloads/series/1/1/' + str(episode), {}).status_code, 400)
+        page = self.client.get('/admin?section=library').data.decode()
+        self.assertIn('Unavailable from provider', page)
+        self.assertIn('Request unconfirmed', page)
+
+    def test_manual_episode_download_can_proceed_during_lookup_error_backoff(self):
+        self.prepare_library_episodes()
+        with connect(self.database) as db:
+            db.execute("UPDATE subscriptions SET error='Episode lookup failed',next_check=?", (int(time.time()) + 3600,))
+        self.post('/admin/downloads/series/1/1/2', {})
+        self.monitor.tick()
+        self.assertEqual([body['episodes'] for body in self.downloads()], ['2'])
+
+    def test_missing_episode_can_be_marked_watched_unwatched_and_remembers_on_import(self):
+        self.prepare_library_episodes()
+        url = '/admin/series/1/1/2/watched'
+        page = self.client.get('/admin?section=library').data.decode()
+        self.assertIn('data-watch-url="' + url + '"', page)
+        self.assertEqual(self.client.post(url, json={'watched': True}).status_code, 403)
+        self.assertEqual(self.post(url, {'watched': True}).json, {'watched': True})
+        with connect(self.database) as db:
+            self.assertEqual(db.execute('SELECT watched FROM discoveries WHERE episode=2').fetchone()[0], 1)
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM media').fetchone()[0], 0)
+        self.assertEqual(self.post(url, {'watched': False}).json, {'watched': False})
+        with connect(self.database) as db:
+            self.assertEqual(db.execute('SELECT watched FROM discoveries WHERE episode=2').fetchone()[0], 0)
+        self.post(url, {'watched': True})
+        self.video(2)
+        with connect(self.database) as db:
+            self.assertEqual(db.execute('SELECT watched FROM progress').fetchone()[0], 1)
+        self.assertEqual(self.post(url, {'watched': False}).status_code, 200, 'old controls remain safe if the file arrives before clicking')
+        with connect(self.database) as db:
+            self.assertEqual(db.execute('SELECT watched FROM progress').fetchone()[0], 0)
+
+    def test_missing_episode_watch_validates_input_and_library_root(self):
+        self.prepare_library_episodes()
+        url = '/admin/series/1/1/2/watched'
+        for body in ({}, {'watched': 1}, {'watched': 'true'}, []):
+            self.assertEqual(self.post(url, body).status_code, 400)
+        self.assertEqual(self.post('/admin/series/1/1/999/watched', {'watched': True}).status_code, 404)
+        with connect(self.database) as db:
+            db.execute("UPDATE settings SET value='/another-library' WHERE key='videos_path'")
+        self.assertEqual(self.post(url, {'watched': True}).status_code, 404)
+
+    def test_missing_episode_can_clear_inherited_legacy_season_history(self):
+        self.prepare_library_episodes()
+        self.video(1)
+        with connect(self.database) as db:
+            db.execute('INSERT INTO season_state(root,series,season,watched,excluded) VALUES(?,?,1,1,1)', (str(self.library), 'Show'))
+        self.post('/admin/series/1/1/2/watched', {'watched': False})
+        with connect(self.database) as db:
+            self.assertEqual([row[0] for row in db.execute('SELECT watched FROM discoveries ORDER BY episode')], [1, 0, 1])
+            self.assertEqual(tuple(db.execute('SELECT watched,excluded FROM season_state').fetchone()), (0, 1))
+            self.assertEqual(db.execute('SELECT watched FROM progress').fetchone()[0], 1)
+
+    def test_new_episode_checkbox_is_checked_only_in_latest_known_season(self):
+        self.provider.episodes = [{'season': 1, 'episode': 1, 'title': 'Older episode'}, {'season': 2, 'episode': 1, 'title': 'Latest episode'}]
+        self.inspect()
+        self.start(only_new=True)
+        page = self.client.get('/admin?section=library').data.decode()
+        older = page.index('data-catalog-key="season:Show:1"')
+        latest = page.index('data-catalog-key="season:Show:2"')
+        self.assertNotIn('data-new-episodes-url', page[older:latest])
+        self.assertEqual(page.count('data-new-episodes-url='), 1)
+        self.assertIn('data-new-episodes-url="/admin/series/1/new-episodes" checked', page[latest:])
+        self.assertIn('Download all', page)
+        self.assertNotIn('>Auto download<', page)
+        self.assertNotIn("Don&#39;t download", page)
+        self.assertNotIn('data-new-episodes-url', self.client.get('/admin?section=library&q=Older').data.decode())
+
+    def test_download_all_queues_only_missing_episodes_even_with_future_downloads_off(self):
+        self.prepare_library_episodes()
+        self.video(1)
+        self.season_action('watched')
+        self.post('/admin/series/1/new-episodes', {'enabled': False})
+        self.assertEqual(self.season_action('download_all').status_code, 302)
+        self.assertEqual(self.season_action('download_all').status_code, 302)
+        with connect(self.database) as db:
+            self.assertEqual([row[0] for row in db.execute("SELECT episode FROM discoveries WHERE state='manual_pending' ORDER BY episode")], [2, 3])
+            self.assertEqual(db.execute('SELECT auto_new FROM subscriptions').fetchone()[0], 0)
+        self.monitor.tick()
+        self.assertEqual([body['episodes'] for body in self.downloads()], ['2', '3'])
+
+    def test_checkbox_stays_off_in_new_seasons_and_enabling_does_not_catch_up(self):
+        self.prepare_library_episodes()
+        self.assertEqual(self.post('/admin/series/1/new-episodes', {'enabled': False}).json, {'enabled': False})
+        self.provider.episodes.append({'season': 1, 'episode': 4})
+        self.check()
+        self.provider.episodes.append({'season': 2, 'episode': 1})
+        self.check()
+        self.assertEqual(self.downloads(), [])
+        self.assertTrue([body for action, body in self.provider.calls if action == 'episodes'][-1]['latest_only'])
+        page = self.client.get('/admin?section=library').data.decode()
+        self.assertIn('data-new-episodes-url="/admin/series/1/new-episodes">', page)
+        self.assertTrue(self.post('/admin/series/1/new-episodes', {'enabled': True}).json['enabled'])
+        self.provider.episodes.append({'season': 2, 'episode': 2})
+        self.check()
+        self.assertEqual([(body['season'], body['episodes']) for body in self.downloads()], [('2', '2')])
+        initialize(self.database)
+        with connect(self.database) as db:
+            self.assertEqual(db.execute('SELECT auto_new FROM subscriptions').fetchone()[0], 1)
+
+    def test_future_download_setting_is_validated_scoped_and_idempotent(self):
+        self.prepare_library_episodes()
+        url = '/admin/series/1/new-episodes'
+        self.assertEqual(self.client.post(url, json={'enabled': False}).status_code, 403)
+        for body in ({}, [], {'enabled': 1}, {'enabled': 'false'}):
+            self.assertEqual(self.post(url, body).status_code, 400)
+        with connect(self.database) as db:
+            db.execute("UPDATE discoveries SET state='new' WHERE episode=2")
+        self.post(url, {'enabled': True})
+        self.post(url, {'enabled': True})
+        with connect(self.database) as db:
+            self.assertEqual(db.execute('SELECT state FROM discoveries WHERE episode=2').fetchone()[0], 'new')
+            db.execute("UPDATE settings SET value='/other-library' WHERE key='videos_path'")
+        self.assertEqual(self.post(url, {'enabled': False}).status_code, 400)
+
+    def test_download_all_does_not_retry_uncertain_or_unavailable_episodes(self):
+        self.prepare_library_episodes()
+        self.video(1)
+        with connect(self.database) as db:
+            db.execute("UPDATE discoveries SET state='uncertain' WHERE episode=2")
+            db.execute('UPDATE discoveries SET listed=0 WHERE episode=3')
+        self.assertEqual(self.season_action('download_all').status_code, 302)
+        self.monitor.tick()
+        self.assertEqual(self.downloads(), [])
+        with connect(self.database) as db:
+            self.assertEqual(db.execute('SELECT state FROM discoveries WHERE episode=2').fetchone()[0], 'uncertain')
+
+    def test_manual_picker_download_preserves_disabled_future_preference(self):
+        self.prepare_library_episodes()
+        self.post('/admin/series/1/new-episodes', {'enabled': False})
+        self.inspect()
+        self.start([{'season': 1, 'episode': 2}])
+        with connect(self.database) as db:
+            self.assertEqual(db.execute('SELECT auto_new FROM subscriptions').fetchone()[0], 0)
+        self.monitor.tick()
+        self.assertEqual([body['episodes'] for body in self.downloads()], ['2'])
+        self.provider.episodes.append({'season': 1, 'episode': 4})
+        self.check()
+        self.assertEqual([body['episodes'] for body in self.downloads()], ['2'])

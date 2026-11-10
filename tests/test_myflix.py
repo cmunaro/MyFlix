@@ -79,7 +79,7 @@ class MyFlixTest(unittest.TestCase):
         other = self.base / "other"
         other.mkdir()
         self.post("/admin/settings", {"videos_path": str(other)})
-        self.assertEqual(self.client.get("/api/catalog/ids").json, {"ids": []})
+        self.assertEqual(self.client.get("/api/catalog/ids").json["ids"], [])
         self.assertEqual(self.client.get(url).status_code, 404)
 
     def test_media_advertises_ranges_and_serves_later_bytes(self):
@@ -132,8 +132,8 @@ class MyFlixTest(unittest.TestCase):
         url = f"/admin/media/{media_id}/watched"
         page = self.client.get("/admin?section=library").data.decode()
         self.assertEqual(page.count('<details class="catalog-season"'), 2)
-        self.assertIn('<span>Season 1</span><span>2 episodes</span>', page)
-        self.assertIn('<span>Season 2</span><span>1 episode</span>', page)
+        self.assertIn('<span>Season 1</span><span>2 episodes · 2 downloaded</span>', page)
+        self.assertIn('<span>Season 2</span><span>1 episode · 1 downloaded</span>', page)
         summaries = re.findall(r'<details class="catalog-item"[^>]*>\s*<summary>(.*?)</summary>', page, re.S)
         self.assertEqual(len(summaries), 3)
         for summary in summaries:
@@ -160,7 +160,7 @@ class MyFlixTest(unittest.TestCase):
         with connect(self.database) as db:
             db.execute("UPDATE media SET hidden=1,available=0 WHERE id=?", (media_id,))
         self.assertEqual(self.post(url, body={"watched": True}).status_code, 200)
-        self.assertIn('Mark as unwatched</button>', self.client.get("/admin?section=removed").data.decode())
+        self.assertIn('Mark as unwatched</button>', self.client.get("/admin?section=library").data.decode())
         self.assertEqual(self.post("/admin/media/99999/watched", body={"watched": True}).status_code, 404)
         (self.base / "other-library").mkdir()
         self.assertEqual(self.post("/admin/settings", {"videos_path": str(self.base / "other-library")}).status_code, 302)

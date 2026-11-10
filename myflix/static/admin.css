@@ -119,3 +119,8 @@
 .series-download-actions{display:flex;gap:12px;flex-wrap:wrap;margin-top:16px}
 .series-download-actions button{flex:1;min-width:160px}
 .episode-picker input:disabled{opacity:.55;cursor:default}
+
+.catalog-item summary{flex-wrap:wrap;gap:12px}
+.catalog-item .catalog-title{min-width:160px}
+.catalog-item summary .catalog-download{margin:0 12px;flex-shrink:0;padding:10px 14px;font-size:16px}
+.catalog-state.is-missing{color:#d6bd8a}

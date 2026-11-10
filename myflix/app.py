@@ -11,12 +11,12 @@ from flask import Flask, abort, jsonify, redirect, render_template, request, sen
 from werkzeug.exceptions import HTTPException
 
 from .artwork import ArtworkCache
-from .catalog import media_path, scan_safely
+from .catalog import library_revision, media_path, scan_safely
 from .db import connect, initialize, settings
 from .credits import CreditsCache
 from .discovery import DiscoveryCache
 from .engine_jobs import validate_limits
-from .monitoring import SeriesMonitor, episode_status, follow, lookup_status
+from .monitoring import SeriesMonitor, episode_status, follow, library_episodes, lookup_status
 from .matroska import HeaderOverlay, seekable_header
 from .metadata import MetadataCache
 from .vibravid import VibraVid, VibraVidError
@@ -118,6 +118,12 @@ def create_app(config=None):
         if not item:
             abort(404)
         return metadata_cache.decorate([dict(item)])[0]
+
+    def save_discovery_watch(db, media_id, watched):
+        db.execute("""UPDATE discoveries SET watched=? WHERE EXISTS(
+            SELECT 1 FROM subscriptions s JOIN media m ON m.root=s.root AND m.series=s.series
+            WHERE s.id=discoveries.subscription_id AND m.id=?
+                AND m.season=discoveries.season AND m.episode=discoveries.episode)""", (watched, media_id))
 
     def decorate(item):
         item["poster"] = url_for("art", media_id=item["id"], kind="poster") if artwork_cache.path(item, "poster") else None
@@ -223,13 +229,18 @@ def create_app(config=None):
                 abort(400)
             series_name = get_media(int(series_id))["series"]
         with connect(database) as db:
+            db.execute("BEGIN")
             root = settings(db)["videos_path"]
+            revision = library_revision(db, root) if series_name is None else None
             if series_name is None:
                 rows = db.execute("SELECT id FROM media WHERE root=? ORDER BY id", (root,)).fetchall()
             else:
                 rows = db.execute("SELECT id FROM media WHERE root=? AND series=? AND available=1 AND hidden=0 ORDER BY id",
                                   (root, series_name)).fetchall()
-        return jsonify(ids=[row["id"] for row in rows])
+        data = {"ids": [row["id"] for row in rows]}
+        if revision is not None:
+            data["revision"] = revision
+        return jsonify(data)
 
     @app.get("/series/<int:media_id>")
     def series(media_id):
@@ -329,7 +340,51 @@ def create_app(config=None):
                 ON CONFLICT(media_id) DO UPDATE SET position=excluded.position,duration=excluded.duration,
                 watched=excluded.watched,updated_at=excluded.updated_at""",
                 (media_id, position, duration, complete, datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S.%f")))
+            save_discovery_watch(db, media_id, complete)
         return jsonify(ok=True)
+
+    def set_media_watch(db, media_id, watched):
+        # Marking watched preserves real playback time and duration; clearing
+        # it starts the episode afresh.
+        db.execute("""INSERT INTO progress(media_id,position,duration,watched,updated_at)
+            VALUES(?,0,0,?,?) ON CONFLICT(media_id) DO UPDATE SET
+            position=CASE WHEN excluded.watched THEN progress.position ELSE 0 END,
+            watched=excluded.watched,updated_at=excluded.updated_at""",
+            (media_id, watched, datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S.%f")))
+        save_discovery_watch(db, media_id, watched)
+
+    @app.post("/admin/series/<int:series_id>/<int:season>/<int:episode>/watched")
+    def mark_provider_episode_watched(series_id, season, episode):
+        body = request.get_json(silent=True)
+        if (not isinstance(body, dict) or type(body.get("watched")) is not bool
+                or not 1 <= series_id <= 2**63 - 1 or not 0 <= season <= 999 or not 1 <= episode <= 9999):
+            abort(400)
+        watched = body["watched"]
+        with connect(database) as db:
+            db.execute("BEGIN IMMEDIATE")
+            item = db.execute("""SELECT s.root,s.series FROM discoveries d JOIN subscriptions s ON s.id=d.subscription_id
+                WHERE s.id=? AND s.root=? AND s.mode!='setup' AND d.season=? AND d.episode=?""",
+                (series_id, settings(db)["videos_path"], season, episode)).fetchone()
+            if not item:
+                abort(404)
+            rule = db.execute("SELECT watched FROM season_state WHERE root=? AND series=? AND season=?",
+                              (item["root"], item["series"], season)).fetchone()
+            if not watched and rule and rule["watched"]:
+                # Convert an inherited legacy season rule into known-episode
+                # history before clearing one episode, preserving its neighbours.
+                db.execute("""UPDATE discoveries SET watched=1 WHERE season=? AND subscription_id IN
+                    (SELECT id FROM subscriptions WHERE root=? AND series=?)""", (season, item["root"], item["series"]))
+                for media in db.execute("SELECT id FROM media WHERE root=? AND series=? AND season=?",
+                                        (item["root"], item["series"], season)).fetchall():
+                    set_media_watch(db, media["id"], True)
+                db.execute("UPDATE season_state SET watched=0 WHERE root=? AND series=? AND season=?",
+                           (item["root"], item["series"], season))
+            db.execute("UPDATE discoveries SET watched=? WHERE subscription_id=? AND season=? AND episode=?",
+                       (watched, series_id, season, episode))
+            for media in db.execute("SELECT id FROM media WHERE root=? AND series=? AND season=? AND episode=?",
+                                    (item["root"], item["series"], season, episode)).fetchall():
+                set_media_watch(db, media["id"], watched)
+        return jsonify(watched=watched)
 
     @app.post("/admin/media/<int:media_id>/watched")
     def mark_watched(media_id):
@@ -342,13 +397,7 @@ def create_app(config=None):
                               (media_id, settings(db)["videos_path"])).fetchone()
             if not item:
                 abort(404)
-            # Marking watched preserves the real playback time and known duration.
-            # Marking unwatched starts the episode afresh.
-            db.execute("""INSERT INTO progress(media_id,position,duration,watched,updated_at)
-                VALUES(?,0,0,?,?) ON CONFLICT(media_id) DO UPDATE SET
-                position=CASE WHEN excluded.watched THEN progress.position ELSE 0 END,
-                watched=excluded.watched,updated_at=excluded.updated_at""",
-                (media_id, watched, datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S.%f")))
+            set_media_watch(db, media_id, watched)
             row = db.execute("SELECT position,duration,watched FROM progress WHERE media_id=?",
                              (media_id,)).fetchone()
         return jsonify(dict(row))
@@ -356,27 +405,52 @@ def create_app(config=None):
     @app.get("/admin")
     def admin():
         section = request.args.get("section", "downloads")
-        if section not in ("downloads", "library", "settings", "removed"):
+        if section == "removed":
+            return redirect(url_for("admin", section="library"))
+        if section not in ("downloads", "library", "settings"):
             section = "downloads"
         query = request.args.get("q", "").strip()[:200]
         with connect(database) as db:
+            db.execute("BEGIN")
             config = settings(db)
             items = [dict(row) for row in db.execute("""SELECT m.*,COALESCE(p.watched,0) watched
                 FROM media m LEFT JOIN progress p ON p.media_id=m.id
                 WHERE root=? ORDER BY series,season,episode,title""", (config["videos_path"],))]
+            all_catalog_ids = sorted(item["id"] for item in items)
+            revision = library_revision(db, config["videos_path"])
+            if section == "library":
+                items = library_episodes(db, config["videos_path"], items)
+            sources = {row["series"]: dict(row) for row in db.execute(
+                "SELECT * FROM subscriptions WHERE root=? AND mode!='setup'", (config["videos_path"],))}
             rules = {(r["series"], r["season"]): dict(r) for r in db.execute(
                 "SELECT * FROM season_state WHERE root=?", (config["videos_path"],))}
-        all_catalog_ids = sorted(item["id"] for item in items)
-        if section == "removed":
-            items = [item for item in items if item["watched"] and not item["available"]]
+        season_watched = {}
+        latest_seasons = {}
+        downloadable_seasons = {}
+        for item in items:
+            if item["series"]:
+                latest_seasons[item["series"]] = max(latest_seasons.get(item["series"], 0), item["season"] or 0)
+                identity = item["series"], item["season"]
+                season_watched[identity] = season_watched.get(identity, True) and bool(item["watched"])
+                downloadable_seasons[identity] = downloadable_seasons.get(identity, False) or bool(
+                    not item["available"] and item.get("listed") and not item.get("download_pending"))
         if query:
             items = [item for item in items if query.casefold() in (item["title"] + " " + item["series"]).casefold()]
         groups = {}
         for item in items:
             if item["series"]:
                 groups.setdefault(item["series"], {}).setdefault(item["season"], []).append(item)
+        for name, seasons in groups.items():
+            for season, episodes in seasons.items():
+                rule = rules.setdefault((name, season), {"excluded": False})
+                rule["watched"] = season_watched[name, season]
+                source = sources.get(name)
+                rule["subscription_id"] = source["id"] if source else None
+                rule["latest"] = season == latest_seasons[name]
+                rule["auto_new"] = bool(source and source["auto_new"] and not rule.get("excluded"))
+                rule["can_download_all"] = downloadable_seasons[name, season]
         return render_template("admin.html", config=config, items=items, groups=groups, rules=rules,
-                               section=section, query=query, catalog_ids=all_catalog_ids,
+                               section=section, query=query, catalog_ids=all_catalog_ids, catalog_revision=revision,
                                notice=request.args.get("notice", ""))
 
     @app.get("/admin/following/status")
@@ -443,9 +517,12 @@ def create_app(config=None):
         series = request.form.get("series", "").strip()
         season = request.form.get("season", "")
         action = request.form.get("action")
-        if not series or len(series) > 300 or not re.fullmatch(r"\d{1,4}", season) or action not in ("watched", "unwatched", "exclude", "include"):
+        if not series or len(series) > 300 or not re.fullmatch(r"\d{1,4}", season) or action not in ("watched", "unwatched", "exclude", "include", "download_all"):
             raise ValueError("Choose a series, season, and valid action")
         season = int(season)
+        if action == "download_all":
+            queued = monitor.queue_season(series, season)
+            return redirect(url_for("admin", section="library", notice=f"Queued {queued} missing episodes."))
         with connect(database) as db:
             db.execute("BEGIN IMMEDIATE")
             root = settings(db)["videos_path"]
@@ -457,9 +534,11 @@ def create_app(config=None):
             db.execute("INSERT OR IGNORE INTO season_state(root,series,season) VALUES(?,?,?)", (root, series, season))
             if action in ("watched", "unwatched"):
                 watched = action == "watched"
-                db.execute("UPDATE season_state SET watched=? WHERE root=? AND series=? AND season=?", (watched, root, series, season))
-                if watched:
-                    db.execute("UPDATE season_state SET excluded=1 WHERE root=? AND series=? AND season=?", (root, series, season))
+                # Bulk history applies to known episodes, not future releases.
+                # Download exclusions are controlled independently.
+                db.execute("UPDATE season_state SET watched=0 WHERE root=? AND series=? AND season=?", (root, series, season))
+                db.execute("""UPDATE discoveries SET watched=? WHERE season=? AND subscription_id IN
+                    (SELECT id FROM subscriptions WHERE root=? AND series=?)""", (watched, season, root, series))
                 db.execute("""INSERT INTO progress(media_id,watched)
                     SELECT id,? FROM media WHERE root=? AND series=? AND season=?
                     ON CONFLICT(media_id) DO UPDATE SET watched=excluded.watched,updated_at=CURRENT_TIMESTAMP""",
@@ -467,7 +546,7 @@ def create_app(config=None):
             else:
                 db.execute("UPDATE season_state SET excluded=? WHERE root=? AND series=? AND season=?", (action == "exclude", root, series, season))
         return redirect(url_for("admin", section="following" if request.form.get("return") == "following" else "library",
-                                notice="Season updated. Marking unwatched does not clear its download exclusion."))
+                                notice="Season updated."))
 
     @app.post("/admin/media/<int:media_id>/remove")
     def remove_media(media_id):
@@ -520,6 +599,17 @@ def create_app(config=None):
             db.execute("INSERT OR REPLACE INTO settings VALUES('download_limit',?)", (str(downloads),))
             db.execute("INSERT OR REPLACE INTO settings VALUES('processing_limit',?)", (str(processing),))
         return redirect(url_for("admin", section="settings", notice="Limits saved. Restart MyFlix to apply them; current jobs continue with their existing limits."))
+
+    @app.post("/admin/series/<int:series_id>/new-episodes")
+    def update_new_episodes(series_id):
+        body = request.get_json(silent=True)
+        if not isinstance(body, dict):
+            abort(400)
+        return jsonify(monitor.set_new_episodes(series_id, body.get("enabled")))
+
+    @app.post("/admin/downloads/series/<int:series_id>/<int:season>/<int:episode>")
+    def download_library_episode(series_id, season, episode):
+        return jsonify(monitor.queue_episode(series_id, season, episode))
 
     @app.post("/admin/downloads/series")
     def start_series_downloads():

@@ -1,5 +1,6 @@
 """Filesystem indexing. The configured root owns all media access."""
 import os
+import hashlib
 import json
 import re
 import time
@@ -63,6 +64,18 @@ def library_files(root, *, minimum_age=60):
             relative = path.relative_to(root)
             found.append((str(relative), stat.st_size, identify(relative)))
     return found
+
+
+def library_revision(db, root):
+    """Track library rows, provider discoveries and controls for live updates."""
+    snapshots = []
+    for query in (
+        "SELECT m.id,m.path,m.title,m.series,m.season,m.episode,m.available,m.hidden,COALESCE(p.watched,0) FROM media m LEFT JOIN progress p ON p.media_id=m.id WHERE m.root=? ORDER BY m.id",
+        "SELECT s.id,s.series,s.mode,s.auto_new,d.season,d.episode,d.title,d.state,d.listed,d.watched,d.error FROM subscriptions s LEFT JOIN discoveries d ON d.subscription_id=s.id WHERE s.root=? AND s.mode!='setup' ORDER BY s.id,d.season,d.episode",
+        "SELECT series,season,watched,excluded FROM season_state WHERE root=? ORDER BY series,season",
+    ):
+        snapshots.append([tuple(row) for row in db.execute(query, (root,))])
+    return hashlib.sha256(repr(snapshots).encode()).hexdigest()
 
 
 def scan(database):
@@ -131,11 +144,12 @@ def _index_files(db, root_value, found, *, full_scan):
             (root_value, relative, title, series, season, episode, size))
         db.execute("""INSERT OR IGNORE INTO media_identity(media_id,identity)
             SELECT id,? FROM media WHERE root=? AND path=?""", (key, root_value, relative))
-    # A season marked watched also applies to episodes imported later.
+    # Preserve legacy season rules and episode history recorded before a file arrived.
     db.execute("""INSERT INTO progress(media_id,watched)
-        SELECT m.id,1 FROM media m JOIN season_state s
-        ON s.root=m.root AND s.series=m.series AND s.season=m.season
-        WHERE s.watched=1 AND m.id NOT IN (SELECT media_id FROM progress)
+        SELECT m.id,1 FROM media m WHERE m.id NOT IN (SELECT media_id FROM progress) AND
+        (EXISTS(SELECT 1 FROM season_state s WHERE s.root=m.root AND s.series=m.series AND s.season=m.season AND s.watched=1)
+         OR EXISTS(SELECT 1 FROM discoveries d JOIN subscriptions s ON s.id=d.subscription_id
+            WHERE s.root=m.root AND s.series=m.series AND d.season=m.season AND d.episode=m.episode AND d.watched=1))
     """)
     db.execute("""UPDATE discoveries SET state='downloaded',error='' WHERE state IN ('submitted','uncertain','failed')
         AND EXISTS(SELECT 1 FROM subscriptions s JOIN media m ON m.root=s.root AND m.series=s.series

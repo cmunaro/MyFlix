@@ -7,12 +7,18 @@
   function array(nodes) { return Array.prototype.slice.call(nodes); }
   function signature(ids) { return ids.slice().sort(function (a, b) { return a - b; }).join(','); }
   var known = signature(JSON.parse(root.getAttribute('data-catalog-ids')));
+  var knownRevision = root.getAttribute('data-catalog-revision');
   function editing() {
-    return dirty || (root.contains(document.activeElement) && /INPUT|SELECT|TEXTAREA/.test(document.activeElement.tagName)) ||
-      Boolean(root.querySelector('[aria-disabled="true"]'));
+    return dirty || (root.contains(document.activeElement) && /INPUT|SELECT|TEXTAREA/.test(document.activeElement.tagName)
+        && !document.activeElement.hasAttribute('data-new-episodes-url')) ||
+      Boolean(root.querySelector('[data-action-pending]'));
   }
-  root.addEventListener('input', function () { dirty = true; });
-  root.addEventListener('change', function () { dirty = true; });
+  function changed(event) {
+    if (event && event.target && event.target.hasAttribute('data-new-episodes-url')) { return; }
+    dirty = true;
+  }
+  root.addEventListener('input', changed);
+  root.addEventListener('change', changed);
   function get(url, done) {
     var request = new XMLHttpRequest();
     request.open('GET', url, true);
@@ -38,6 +44,8 @@
     root.innerHTML = incoming.innerHTML;
     known = signature(JSON.parse(incoming.getAttribute('data-catalog-ids')));
     root.setAttribute('data-catalog-ids', incoming.getAttribute('data-catalog-ids'));
+    knownRevision = incoming.getAttribute('data-catalog-revision');
+    if (knownRevision) { root.setAttribute('data-catalog-revision', knownRevision); }
     var replacementOwner = root;
     array(root.querySelectorAll('[data-catalog-key]')).forEach(function (element) {
       if (opened.indexOf(key(element)) !== -1) { element.open = true; }
@@ -52,7 +60,12 @@
           if (card.getAttribute('data-media-id') === mediaId) { target = card; }
         });
       }
-      target = target || replacementOwner.querySelectorAll(controls)[focusIndex] || root.querySelector(controls);
+      target = target || replacementOwner.querySelectorAll(controls)[focusIndex];
+      if (!target || target.disabled || target.type === 'hidden' || !target.offsetWidth || !target.offsetHeight) {
+        target = replacementOwner.querySelector('summary') || array(root.querySelectorAll(controls)).filter(function (element) {
+          return !element.disabled && element.type !== 'hidden' && element.offsetWidth && element.offsetHeight;
+        })[0];
+      }
       if (target) { target.focus(); }
     }
     array(root.querySelectorAll('[data-rail]')).forEach(function (rail) {
@@ -67,7 +80,7 @@
     get(root.getAttribute('data-catalog-url'), function (text) {
       var data;
       try { data = text && JSON.parse(text); } catch (error) { busy = false; return; }
-      if (!data || !Array.isArray(data.ids) || signature(data.ids) === known) { busy = false; return; }
+      if (!data || !Array.isArray(data.ids) || (signature(data.ids) === known && (data.revision === undefined || data.revision === knownRevision))) { busy = false; return; }
       get(window.location.href, function (html) {
         busy = false;
         if (!html || document.hidden || editing()) { return; }

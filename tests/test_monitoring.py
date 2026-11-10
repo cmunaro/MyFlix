@@ -339,7 +339,7 @@ class MonitoringTest(unittest.TestCase):
         with connect(self.database) as db:
             self.assertEqual(db.execute("SELECT mode FROM subscriptions WHERE id=1").fetchone()[0], "notify")
 
-    def test_watched_season_excludes_current_and_future_imports_and_manual_override(self):
+    def test_mark_all_watched_applies_to_known_episodes_without_excluding_future_imports(self):
         self.video("Show.S01E01.First.mp4")
         scan(self.database)
         self.follow()
@@ -347,17 +347,15 @@ class MonitoringTest(unittest.TestCase):
         self.provider.episodes.append({"season": 1, "episode": 2})
         self.post("/admin/following/1", {"mode": "auto"})
         self.monitor.tick()
-        self.assertFalse(any(action == "download" for action, _ in self.provider.calls))
-        self.assertEqual(self.post("/admin/following/1/1/2", {"action": "download"}).status_code, 400)
-        self.assertEqual(self.post("/admin/following/1/1/2", {"action": "download", "include_watched": "1"}).status_code, 302)
+        self.assertEqual([body["episodes"] for action, body in self.provider.calls if action == "download"], ["2"])
         self.video("Show.S01E02.Second.mp4")
         scan(self.database)
         with connect(self.database) as db:
-            self.assertEqual([r[0] for r in db.execute("SELECT watched FROM progress ORDER BY media_id")], [1, 1])
+            self.assertEqual([r[0] for r in db.execute("SELECT COALESCE(p.watched,0) FROM media m LEFT JOIN progress p ON p.media_id=m.id ORDER BY m.id")], [1, 0])
         self.assertEqual(self.discoveries()[1]["state"], "downloaded")
         self.post("/admin/season", {"series": "Show", "season": "1", "action": "unwatched"})
         with connect(self.database) as db:
-            self.assertEqual(tuple(db.execute("SELECT watched,excluded FROM season_state").fetchone()), (0, 1))
+            self.assertEqual(tuple(db.execute("SELECT watched,excluded FROM season_state").fetchone()), (0, 0))
 
     def test_automatic_downloads_skip_local_watched_excluded_and_external_queue(self):
         self.follow()
@@ -1000,9 +998,9 @@ class MonitoringTest(unittest.TestCase):
         self.assertEqual(self.post(f"/admin/media/{media_id}/remove").status_code, 400)
         self.assertEqual(self.post(f"/admin/media/{media_id}/remove", {"confirm": "remove"}).status_code, 302)
         self.assertFalse((self.library / "Show.S01E01.First.mp4").exists())
-        archive = self.client.get("/admin?section=removed").data
+        archive = self.client.get("/admin?section=library").data
         self.assertIn(b"Custom title", archive)
-        self.assertIn(b"Find to download again", archive)
+        self.assertIn(b">Download</a>", archive)
         self.video("Season 1/Show.S01E01.New.Name.mkv")
         scan(self.database)
         with connect(self.database) as db:
@@ -1010,7 +1008,7 @@ class MonitoringTest(unittest.TestCase):
             self.assertEqual((row["id"], row["title"], row["hidden"], row["available"]), (media_id, "Custom title", 1, 1))
             self.assertEqual(db.execute("SELECT watched FROM progress").fetchone()[0], 1)
             self.assertEqual(db.execute("SELECT COUNT(*) FROM media").fetchone()[0], 1)
-        self.assertNotIn(b"Custom title", self.client.get("/admin?section=removed").data)
+        self.assertIn(b"Custom title", self.client.get("/admin?section=library").data)
 
     def test_library_groups_episodes_under_one_series_and_season_controls(self):
         self.video("Show.S01E01.First.mp4")
@@ -1020,9 +1018,9 @@ class MonitoringTest(unittest.TestCase):
         scan(self.database)
         page = self.client.get("/admin?section=library").data.decode()
         self.assertEqual(page.count('<details class="catalog-series"'), 1)
-        self.assertEqual(page.count('<section class="catalog-season">'), 2)
+        self.assertEqual(page.count('<details class="catalog-season"'), 2)
         self.assertEqual(page.count('<details class="catalog-item"'), 4)
-        self.assertIn('Mark season watched &amp; exclude downloads', page)
+        self.assertIn('Mark all as watched', page)
         self.assertIn('name="confirm" value="remove" required', page)
 
     def test_alias_links_provider_output_to_selected_library_series(self):

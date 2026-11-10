@@ -27,7 +27,7 @@ The current pin is VibraVid **1.5.0**, including upstream Referer-header fixes f
 
 ![MyFlix management screen showing provider search, library navigation, and download progress](res/manage_download.png)
 
-The admin interface works with a desktop pointer or TV remote. Use **Downloads** to find titles and manage the queue, **Library** to edit your collection, and **Settings** to select storage and download limits. **Watched and removed** keeps history accessible after video files are removed.
+The admin interface works with a desktop pointer or TV remote. Use **Downloads** to find titles and manage the queue, **Library** to edit your collection, and **Settings** to select storage and download limits. Library retains episode details and watch history after video files are removed.
 
 ## Get started
 
@@ -73,6 +73,8 @@ The.Show.1x03.Episode.Title.mp4
 Correct unusual names and metadata in **Library**. Local JPEG artwork is supported, including `poster.jpg`, `fanart.jpg`, and `<video>-poster.jpg` sidecars. Provider artwork fills gaps when a confident match is available; otherwise titles get a text-based cover.
 
 Catalog edits and watch progress survive rescans and missing files. An unavailable mount preserves the previous catalog and reports a scan error. Removing a video through admin deletes its library file but keeps its catalog details and watch history; sidecars and staging originals remain.
+
+Library also lists cached provider episodes that have not been downloaded, including series with no local episodes yet. Status labels distinguish **Downloaded**, **Not downloaded**, queued work, and unavailable episodes. Use an episode's **Download** button to queue it directly. Missing episodes also support **Mark as watched** and **Mark as unwatched**; that history remains when the file is downloaded later. **Mark all as watched** affects only known episodes and does not change automatic-download settings. **Download all** queues the season’s missing available episodes. Only the latest season shows **Download new episodes**, checked by default. This saved checkbox controls future automatic downloads and follows the series into new seasons; it does not cancel work already queued. Manual downloads work even when it is off and preserve that preference.
 
 ### Download a series
 

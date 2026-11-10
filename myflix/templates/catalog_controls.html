@@ -1,17 +1,32 @@
 {% macro season_controls(series,season,rule,return_section='library') %}
 <div class="season-controls">
-  <p>{{ 'Watched' if rule and rule.watched else 'Season watch history' }} · {{ 'Excluded from automatic downloads' if rule and rule.excluded else 'Automatic downloads allowed for unwatched episodes' }}</p>
+  <p>{{ 'Watched' if rule and rule.watched else 'Season watch history' }}</p>
   <form method="post" action="{{ url_for('update_season') }}">
     <input type="hidden" name="csrf" value="{{ session.csrf }}"><input type="hidden" name="series" value="{{ series }}"><input type="hidden" name="season" value="{{ season }}"><input type="hidden" name="return" value="{{ return_section }}">
-    <button class="secondary" name="action" value="{{ 'unwatched' if rule and rule.watched else 'watched' }}">{{ 'Mark season unwatched' if rule and rule.watched else 'Mark season watched & exclude downloads' }}</button>
-    <button class="secondary" name="action" value="{{ 'include' if rule and rule.excluded else 'exclude' }}">{{ 'Allow automatic downloads' if rule and rule.excluded else 'Exclude automatic downloads' }}</button>
+    {% if rule and rule.subscription_id %}<button class="primary" name="action" value="download_all"{% if not rule.can_download_all %} disabled{% endif %}>Download all</button>{% else %}<a class="button secondary" href="{{ url_for('admin',section='downloads',q=series) }}">Download all</a>{% endif %}
+    <button class="secondary" name="action" value="{{ 'unwatched' if rule and rule.watched else 'watched' }}">{{ 'Mark all as unwatched' if rule and rule.watched else 'Mark all as watched' }}</button>
   </form>
+  {% if rule and rule.latest and rule.subscription_id %}
+  <label class="checkbox"><input type="checkbox" id="new-episodes-{{ rule.subscription_id }}" data-new-episodes-url="{{ url_for('update_new_episodes',series_id=rule.subscription_id) }}"{% if rule.auto_new %} checked{% endif %}> Download new episodes</label>
+  {% endif %}
 </div>
 {% endmacro %}
 
-{% macro media_editor(item,removed=false) %}
-<details class="catalog-item" data-catalog-key="media:{{ item.id }}">
-  <summary><span class="catalog-title">{{ item.title }}{% if item.series %}<small>S{{ item.season }} · E{{ item.episode }}</small>{% endif %}</span>{% if item.series %}<button type="button" class="secondary catalog-watch" data-watch-url="{{ url_for('mark_watched',media_id=item.id) }}" data-watched="{{ 1 if item.watched else 0 }}" aria-label="{{ 'Mark as unwatched' if item.watched else 'Mark as watched' }}: {{ item.series }} S{{ item.season }} E{{ item.episode }}" data-episode-name="{{ item.series }} S{{ item.season }} E{{ item.episode }}">{{ 'Mark as unwatched' if item.watched else 'Mark as watched' }}</button>{% endif %}<span data-watch-state data-availability="{{ 'Hidden' if item.hidden else 'Ready' if item.available else 'Removed / missing' }}" class="catalog-state {{ 'is-hidden' if item.hidden else 'is-ready' if item.available else 'is-missing' }}">{{ 'Watched · ' if item.watched else '' }}{{ 'Hidden' if item.hidden else 'Ready' if item.available else 'Removed / missing' }}</span><span class="catalog-chevron" aria-hidden="true">⌄</span></summary>
+{% macro episode_download(item) %}
+{% if item.series and not item.available %}
+  {% if item.subscription_id %}
+  <button type="button" class="primary catalog-download" aria-label="Download {{ item.series }} S{{ item.season }} E{{ item.episode }}" data-download-url="{{ url_for('download_library_episode',series_id=item.subscription_id,season=item.season,episode=item.episode) }}" data-episode-name="{{ item.series }} S{{ item.season }} E{{ item.episode }}"{% if not item.listed or item.download_pending %} disabled aria-disabled="true"{% endif %}>Download</button>
+  {% else %}
+  <a class="button secondary" href="{{ url_for('admin',section='downloads',q=item.series) }}">Download</a>
+  {% endif %}
+{% endif %}
+{% endmacro %}
+
+{% macro media_editor(item) %}
+{% set availability = ('Downloaded · Hidden' if item.hidden else 'Downloaded') if item.available else 'Unavailable from provider' if item.listed is defined and not item.listed else 'Request unconfirmed — check queue' if item.download_state is defined and item.download_state in ('uncertain','submitting') else 'Queued / downloading' if item.download_pending else 'Not downloaded' %}
+<details class="catalog-item" data-catalog-key="{{ 'episode:' ~ item.subscription_id ~ ':' ~ item.season ~ ':' ~ item.episode if item.subscription_id else 'media:' ~ item.id }}">
+  <summary><span class="catalog-title">{{ item.title }}{% if item.series %}<small>S{{ item.season }} · E{{ item.episode }}</small>{% endif %}</span>{{ episode_download(item) }}{% if item.series and (item.id or item.subscription_id) %}<button type="button" class="secondary catalog-watch" data-watch-url="{{ url_for('mark_watched',media_id=item.id) if item.id else url_for('mark_provider_episode_watched',series_id=item.subscription_id,season=item.season,episode=item.episode) }}" data-watched="{{ 1 if item.watched else 0 }}" aria-label="{{ 'Mark as unwatched' if item.watched else 'Mark as watched' }}: {{ item.series }} S{{ item.season }} E{{ item.episode }}" data-episode-name="{{ item.series }} S{{ item.season }} E{{ item.episode }}">{{ 'Mark as unwatched' if item.watched else 'Mark as watched' }}</button>{% endif %}<span data-watch-state data-availability="{{ availability }}" class="catalog-state {{ 'is-hidden' if item.hidden else 'is-ready' if item.available else 'is-missing' }}">{{ 'Watched · ' if item.watched else '' }}{{ availability }}</span><span class="catalog-chevron" aria-hidden="true">⌄</span></summary>
+  {% if item.id %}
   <form method="post" action="{{ url_for('edit_media',media_id=item.id) }}" class="edit-form">
     <input type="hidden" name="csrf" value="{{ session.csrf }}">
     <label>Title<input name="title" value="{{ item.title }}" required maxlength="300"></label>
@@ -23,8 +38,10 @@
   <p class="filepath">{{ item.path }} · {{ (item.size / 1048576)|round(1) }} MB</p>
   {% if item.available %}
   <form method="post" action="{{ url_for('remove_media',media_id=item.id) }}" class="remove-video"><input type="hidden" name="csrf" value="{{ session.csrf }}"><label class="checkbox"><input type="checkbox" name="confirm" value="remove" required> Delete this video file; keep details and history</label><button class="secondary">Remove video from disk</button></form>
-  {% else %}
-  <a class="button secondary" href="{{ url_for('admin',section='downloads',q=item.series or item.title) }}">Find to download again</a>
+  {% elif not item.series %}
+  <a class="button secondary" href="{{ url_for('admin',section='downloads',q=item.title) }}">Find to download again</a>
   {% endif %}
+  {% endif %}
+  {% if item.download_error %}<p class="error">{{ item.download_error }}</p>{% endif %}
 </details>
 {% endmacro %}

@@ -1,19 +1,19 @@
 {% from 'catalog_controls.html' import season_controls,media_editor with context %}
-<section class="admin-panel" aria-labelledby="catalog-heading"{% if section == 'library' %} id="catalog-live" data-catalog-url="{{ url_for('catalog_ids') }}" data-catalog-ids='{{ catalog_ids|tojson }}'{% endif %}>
-  <div class="panel-heading"><h2 id="catalog-heading">{{ 'Watched and removed' if section == 'removed' else 'Your collection' }}</h2><span class="section-tag">{{ items|length }} VIDEOS</span></div>
+<section class="admin-panel" aria-labelledby="catalog-heading"{% if section == 'library' %} id="catalog-live" data-catalog-url="{{ url_for('catalog_ids') }}" data-catalog-ids='{{ catalog_ids|tojson }}' data-catalog-revision="{{ catalog_revision }}"{% endif %}>
+  <div class="panel-heading"><h2 id="catalog-heading">Your collection</h2><span class="section-tag">{{ items|selectattr('available')|list|length }} DOWNLOADED</span></div>
   <form class="catalog-search" method="get"><input type="hidden" name="section" value="{{ section }}"><label for="catalog-query">Find in your library<input id="catalog-query" name="q" value="{{ query }}" placeholder="Film, series or episode title" maxlength="200"></label><button class="secondary">Find</button>{% if query %}<a class="button secondary" href="{{ url_for('admin',section=section) }}">Clear</a>{% endif %}</form>
-  <p class="panel-note">{{ 'Watch history and catalog details stay saved after files are removed. Missing files are detected by library scans.' if section == 'removed' else 'Open a series to manage its seasons and episodes. Removing files retains history; hiding titles keeps them on disk.' }}</p>
+  <p class="panel-note">Open a series to see downloaded and missing episodes. Watch history and automatic download controls are independent.</p>
   <p id="library-watch-status" class="panel-note" role="status" aria-live="polite"></p>
   {% for series,seasons in groups.items() %}
   <details class="catalog-series" data-catalog-key="series:{{ series }}">
     <summary><span class="catalog-title">{{ series }}</span><span>{{ seasons|length }} seasons</span><span aria-hidden="true">⌄</span></summary>
     {% for season,episodes in seasons.items() %}
-    <details class="catalog-season" data-catalog-key="season:{{ series }}:{{ season }}"><summary><span>Season {{ season }}</span><span>{{ episodes|length }} {{ 'episode' if episodes|length == 1 else 'episodes' }}</span><span aria-hidden="true">⌄</span></summary>{{ season_controls(series,season,rules.get((series,season))) }}
-      {% for item in episodes %}{{ media_editor(item,section == 'removed') }}{% endfor %}
+    <details class="catalog-season" data-catalog-key="season:{{ series }}:{{ season }}"><summary><span>Season {{ season }}</span><span>{{ episodes|length }} {{ 'episode' if episodes|length == 1 else 'episodes' }} · {{ episodes|selectattr('available')|list|length }} downloaded</span><span aria-hidden="true">⌄</span></summary>{{ season_controls(series,season,rules.get((series,season))) }}
+      {% for item in episodes %}{{ media_editor(item) }}{% endfor %}
     </details>
     {% endfor %}
   </details>
   {% endfor %}
-  {% for item in items if not item.series %}{{ media_editor(item,section == 'removed') }}{% endfor %}
-  {% if not items %}<div class="admin-empty"><h3>{{ 'No watched and removed videos' if section == 'removed' else 'No matching titles' if query else 'Your collection starts here' }}</h3><p>{{ 'Saved history will appear here when watched video files are removed.' if section == 'removed' else 'Find a film or series in Downloads, or choose your videos folder in Settings.' }}</p><a class="button primary" href="{{ url_for('admin',section='downloads') }}">Find a title</a></div>{% endif %}
+  {% for item in items if not item.series %}{{ media_editor(item) }}{% endfor %}
+  {% if not items %}<div class="admin-empty"><h3>{{ 'No matching titles' if query else 'Your collection starts here' }}</h3><p>Find a film or series in Downloads, or choose your videos folder in Settings.</p><a class="button primary" href="{{ url_for('admin',section='downloads') }}">Find a title</a></div>{% endif %}
 </section>

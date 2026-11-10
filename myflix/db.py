@@ -130,7 +130,8 @@ def initialize(path):
         columns = {row["name"] for row in db.execute("PRAGMA table_info(discoveries)")}
         for name, definition in (("error", "TEXT NOT NULL DEFAULT ''"),
                                  ("download_id", "TEXT NOT NULL DEFAULT ''"),
-                                 ("submitted_at", "REAL NOT NULL DEFAULT 0")):
+                                 ("submitted_at", "REAL NOT NULL DEFAULT 0"),
+                                 ("watched", "INTEGER NOT NULL DEFAULT 0")):
             if name not in columns:
                 db.execute(f"ALTER TABLE discoveries ADD COLUMN {name} {definition}")
         # Retain the time of legacy acknowledged episode/retry submissions. A
@@ -150,7 +151,8 @@ def initialize(path):
                                  ("lookup_seasons_done", "INTEGER NOT NULL DEFAULT 0"),
                                  ("lookup_seasons_total", "INTEGER NOT NULL DEFAULT 0"),
                                  ("lookup_season", "INTEGER NOT NULL DEFAULT 0"),
-                                 ("lookup_episodes", "INTEGER NOT NULL DEFAULT 0")):
+                                 ("lookup_episodes", "INTEGER NOT NULL DEFAULT 0"),
+                                 ("auto_new", "INTEGER NOT NULL DEFAULT 1")):
             if name not in columns:
                 db.execute(f"ALTER TABLE subscriptions ADD COLUMN {name} {definition}")
         db.execute("INSERT OR IGNORE INTO settings VALUES('download_limit','4')")
