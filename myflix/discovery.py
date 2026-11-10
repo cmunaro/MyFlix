@@ -1,4 +1,5 @@
-"""Bounded, credential-free SIMKL discovery feeds, refreshed off request paths."""
+"""Bounded, credential-free discovery feeds, refreshed off request paths."""
+import hashlib
 import json
 import logging
 import re
@@ -7,6 +8,8 @@ from datetime import datetime, timezone
 from urllib.request import Request, build_opener, HTTPRedirectHandler
 
 from .db import connect
+from .artwork import ArtworkError
+from .streamingcommunity import FEEDS as SC_FEEDS
 
 
 FEEDS = {
@@ -14,6 +17,7 @@ FEEDS = {
     "popular_movie": ("discover/trending/movies/week_100.json", 86400, "movie"),
     "upcoming_tv": ("calendar/v2/tv.json", 21600, "tv"),
 }
+ALL_FEEDS = {**FEEDS, **{name: (name, 86400, "") for name in SC_FEEDS}}
 
 
 class NoRedirect(HTTPRedirectHandler):
@@ -101,14 +105,37 @@ def parse_feed(name, data):
 
 
 class DiscoveryCache:
-    def __init__(self, database):
+    def __init__(self, database, engine, artwork):
         self.database = database
+        self.engine = engine
+        self.artwork = artwork
 
     def read(self):
         with connect(self.database) as db:
             rows = db.execute("SELECT * FROM discovery_feeds").fetchall()
         return {row["name"]: dict(items=json.loads(row["payload"]), updated=row["updated"], error=row["error"])
-                for row in rows if row["name"] in FEEDS}
+                for row in rows if row["name"] in ALL_FEEDS}
+
+    def provider_items(self, name, stop):
+        items = self.engine.call("discovery", {"feed": name})["items"]
+        if not isinstance(items, list) or len(items) > SC_FEEDS[name][2]:
+            raise ValueError("Invalid provider discovery feed")
+        for item in items:
+            if stop.is_set():
+                return None
+            for kind in ("poster", "backdrop"):
+                url = item.get(kind)
+                item[kind] = None
+                if not isinstance(url, str) or not url:
+                    continue
+                key = hashlib.sha256(url.encode()).hexdigest()
+                try:
+                    if not self.artwork.cached(key):
+                        self.artwork.download(key, url)
+                    item[kind] = f"/discovery-artwork/{key}.jpg"
+                except ArtworkError:
+                    logging.warning("Discovery artwork unavailable")
+        return items
 
     def fetch(self, path):
         request = Request("https://data.simkl.in/" + path, headers={"User-Agent": "MyFlix/0.1", "Accept": "application/json"})
@@ -120,7 +147,7 @@ class DiscoveryCache:
         return json.loads(data)
 
     def update(self, stop):
-        for name, (path, interval, _) in FEEDS.items():
+        for name, (path, interval, _) in ALL_FEEDS.items():
             if stop.is_set():
                 return
             now = int(time.time())
@@ -129,13 +156,15 @@ class DiscoveryCache:
             if row and row["next_check"] > now:
                 continue
             try:
-                items = parse_feed(name, self.fetch(path))
+                items = self.provider_items(name, stop) if name in SC_FEEDS else parse_feed(name, self.fetch(path))
+                if items is None:
+                    return
                 with connect(self.database) as db:
                     db.execute("""INSERT OR REPLACE INTO discovery_feeds
                         (name,payload,updated,next_check,error) VALUES(?,?,?,?,0)""",
                                (name, json.dumps(items), now, now + interval))
             except Exception:
-                logging.warning("SIMKL discovery feed %s unavailable; preserving cached results", name)
+                logging.warning("Discovery feed %s unavailable; preserving cached results", name)
                 with connect(self.database) as db:
                     db.execute("INSERT OR IGNORE INTO discovery_feeds(name) VALUES(?)", (name,))
                     db.execute("UPDATE discovery_feeds SET error=1,next_check=? WHERE name=?", (now + 3600, name))

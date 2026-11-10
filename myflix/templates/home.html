@@ -5,7 +5,7 @@
 <div id="preview-video">{% if preview_trailer %}<iframe id="preview-frame" loading="eager" tabindex="-1" aria-hidden="true" title="Trailer preview" allow="autoplay; encrypted-media" referrerpolicy="strict-origin-when-cross-origin" src="https://www.youtube-nocookie.com/embed/{{ preview_trailer }}?{{ {'enablejsapi': 1, 'autoplay': 0, 'controls': 0, 'disablekb': 1, 'playsinline': 1, 'rel': 0, 'origin': request.host_url.rstrip('/')}|urlencode }}"></iframe>{% endif %}</div>
 <div id="discovery-preview" class="discovery-preview" hidden aria-hidden="true">
   <img id="preview-image" alt=""><div class="preview-shade"></div>
-  <div class="preview-heading"><p>DISCOVER · SIMKL</p><h1 id="preview-title"></h1></div>
+  <div class="preview-heading"><p>DISCOVER</p><h1 id="preview-title"></h1></div>
 </div>
 <p id="preview-status" class="preview-status" role="status" hidden></p>
 {% if query or request.args.get('search') %}

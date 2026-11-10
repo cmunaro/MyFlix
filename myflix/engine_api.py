@@ -136,6 +136,23 @@ def install():
     @csrf_exempt
     @require_bot_secret
     @require_POST
+    def discovery(request):
+        from .streamingcommunity import FEEDS, fetch
+        body = _json_body(request)
+        name = body.get("feed")
+        if not isinstance(name, str) or name not in FEEDS:
+            return JsonResponse({"error": "Invalid discovery feed"}, status=400)
+        try:
+            return JsonResponse({"items": fetch(get_api("streamingcommunity"), name)})
+        except Exception:
+            logging.exception("StreamingCommunity discovery unavailable")
+            return JsonResponse({"error": "Discovery unavailable"}, status=502)
+
+    urlpatterns.insert(0, path("api/myflix/discovery/", discovery))
+
+    @csrf_exempt
+    @require_bot_secret
+    @require_POST
     def episodes(request):
         try:
             body = _json_body(request)

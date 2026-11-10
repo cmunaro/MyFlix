@@ -69,7 +69,7 @@ def create_app(config=None):
     app.extensions["artwork"] = artwork_cache
     metadata_cache = MetadataCache(database, vibravid)
     app.extensions["metadata"] = metadata_cache
-    discovery_cache = DiscoveryCache(database)
+    discovery_cache = DiscoveryCache(database, vibravid, artwork_cache)
     app.extensions["discovery"] = discovery_cache
 
     @app.template_filter("datetime")
@@ -220,32 +220,47 @@ def create_app(config=None):
         if not query and not request.args.get("search") and view != "continue":
             feeds = discovery_cache.read()
             today = datetime.now(timezone.utc).date().isoformat()
-            for name, label in (("popular_tv", "Most watched series this week on SIMKL"),
+            for name, label in (("sc_trending", "Titoli del momento · StreamingCommunity"),
+                                ("sc_top_tv", "Top 10 serie TV · StreamingCommunity"),
+                                ("sc_top_movie", "Top 10 film · StreamingCommunity"),
+                                ("popular_tv", "Most watched series this week on SIMKL"),
                                 ("popular_movie", "Most watched films this week on SIMKL"),
                                 ("upcoming_tv", "Upcoming series & seasons · SIMKL")):
-                if (view == "movies" and name.endswith("tv")) or (view == "series" and name.endswith("movie")):
-                    continue
-                items = [dict(item, href=url_for("discover", kind=item["kind"], identity=item["id"]))
+                items = [dict(item, href=url_for("discover", kind=item["kind"], identity=item["id"],
+                                                source=item.get("source", "simkl")))
                          for item in feeds.get(name, {}).get("items", [])
-                         if not name.startswith("upcoming") or item["release"] >= today]
+                         if (not name.startswith("upcoming") or item["release"] >= today)
+                         and (view != "movies" or item["kind"] == "movie")
+                         and (view != "series" or item["kind"] == "tv")]
                 if items:
                     discovery_shelves.append((label, items[:20]))
             if any(feed["error"] for feed in feeds.values()):
                 discovery_notice = "Discovery updates unavailable. Showing saved results where available."
             elif not feeds:
-                discovery_notice = "Discovery is loading. Refresh shortly for SIMKL releases and rankings."
+                discovery_notice = "Discovery is loading. Refresh shortly for releases and rankings."
         preview_trailer = next((item["trailer"] for _, items in discovery_shelves
                                 for item in items if item["trailer"]), "")
         return render_template("home.html", shelves=shelves, discovery_shelves=discovery_shelves, preview_trailer=preview_trailer,
                                discovery_notice=discovery_notice, featured=featured, query=query, view=view)
 
-    @app.get("/discover/<any(tv,movie):kind>/<int:identity>")
-    def discover(kind, identity):
+    @app.get("/discover/<any(tv,movie):kind>/<int:identity>", defaults={"source": "simkl"})
+    @app.get("/discover/<any(streamingcommunity):source>/<any(tv,movie):kind>/<int:identity>")
+    def discover(kind, identity, source):
         item = next((item for feed in discovery_cache.read().values() for item in feed["items"]
-                     if item["kind"] == kind and item["id"] == identity), None)
+                     if item["kind"] == kind and item["id"] == identity
+                     and item.get("source", "simkl") == source), None)
         if not item:
             abort(404)
         return render_template("discover.html", item=item)
+
+    @app.get("/discovery-artwork/<key>.jpg")
+    def discovery_artwork(key):
+        if not re.fullmatch(r"[a-f0-9]{64}", key):
+            abort(404)
+        path = artwork_cache.cached(key)
+        if not path:
+            abort(404)
+        return send_file(path, mimetype="image/jpeg", conditional=True)
 
     @app.get("/api/catalog/ids")
     def catalog_ids():

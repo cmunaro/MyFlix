@@ -14,7 +14,11 @@
       {% if item.trailer %}<a class="button secondary" href="https://www.youtube.com/watch?v={{ item.trailer }}">Watch trailer</a>{% endif %}
       <a class="button secondary" href="/">Back</a>
     </div>
+    {% if item.source == 'streamingcommunity' %}
+    <p class="discovery-source">Data from <a href="{{ item.source_url }}">StreamingCommunity</a>. Rankings reflect the provider's Italian catalog.</p>
+    {% else %}
     <p class="discovery-source">Data from <a href="https://simkl.com/{{ 'tv' if item.kind == 'tv' else 'movies' }}/{{ item.id }}/">SIMKL</a>. Rankings reflect SIMKL viewers. Release dates may vary by region.</p>
+    {% endif %}
   </div>
 </section>
 {% endblock %}
