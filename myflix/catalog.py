@@ -37,6 +37,24 @@ def media_path(root, relative):
     return path
 
 
+def remove_files(db, items):
+    """Remove confined videos, recording each success even after a partial failure."""
+    failed = 0
+    for item in items:
+        try:
+            path = media_path(item["root"], item["path"])
+            if path != Path(item["root"]).resolve(strict=True) / item["path"]:
+                raise ValueError("Refusing to remove a symlink target")
+            path.unlink()
+        except FileNotFoundError:
+            pass
+        except (OSError, ValueError):
+            failed += 1
+            continue
+        db.execute("UPDATE media SET available=0 WHERE id=?", (item["id"],))
+    return failed
+
+
 def source_identity(path):
     title, series, season, episode = identify(Path(path))
     return json.dumps([series, season, episode] if series else [title])
@@ -70,7 +88,7 @@ def library_revision(db, root):
     """Track library rows, provider discoveries and controls for live updates."""
     snapshots = []
     for query in (
-        "SELECT m.id,m.path,m.title,m.series,m.season,m.episode,m.available,m.hidden,COALESCE(p.watched,0) FROM media m LEFT JOIN progress p ON p.media_id=m.id WHERE m.root=? ORDER BY m.id",
+        "SELECT m.id,m.path,m.title,m.series,m.season,m.episode,m.size,m.available,m.hidden,COALESCE(p.watched,0) FROM media m LEFT JOIN progress p ON p.media_id=m.id WHERE m.root=? ORDER BY m.id",
         "SELECT s.id,s.series,s.mode,s.auto_new,d.season,d.episode,d.title,d.state,d.listed,d.watched,d.error FROM subscriptions s LEFT JOIN discoveries d ON d.subscription_id=s.id WHERE s.root=? AND s.mode!='setup' ORDER BY s.id,d.season,d.episode",
         "SELECT series,season,watched,excluded FROM season_state WHERE root=? ORDER BY series,season",
     ):

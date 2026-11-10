@@ -27,7 +27,7 @@ The current pin is VibraVid **1.5.0**, including upstream Referer-header fixes f
 
 ![MyFlix management screen showing provider search, library navigation, and download progress](res/manage_download.png)
 
-The admin interface works with a desktop pointer or TV remote. Use **Downloads** to find titles and manage the queue, **Library** to edit your collection, and **Settings** to select storage and download limits. Library retains episode details and watch history after video files are removed.
+The admin interface works with a desktop pointer or TV remote. Use **Downloads** to find titles and manage the queue, **Library** to edit your collection, and **Settings** to select storage and download limits. Library shows total and free space on the selected library drive, plus downloaded file sizes and series/season totals (decimal GB/MB). Use **Delete** on a downloaded title or **Remove all** within a season; confirm before files are deleted. Library retains episode details and watch history after video files are removed.
 
 ## Get started
 

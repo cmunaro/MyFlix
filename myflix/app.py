@@ -3,6 +3,7 @@ import math
 import os
 import re
 import secrets
+import shutil
 import threading
 from pathlib import Path
 from datetime import datetime, timezone
@@ -11,7 +12,7 @@ from flask import Flask, abort, jsonify, redirect, render_template, request, sen
 from werkzeug.exceptions import HTTPException
 
 from .artwork import ArtworkCache
-from .catalog import library_revision, media_path, scan_safely
+from .catalog import library_revision, media_path, remove_files, scan_safely
 from .db import connect, initialize, settings
 from .credits import CreditsCache
 from .discovery import DiscoveryCache
@@ -72,6 +73,13 @@ def create_app(config=None):
     @app.template_filter("datetime")
     def format_datetime(value):
         return datetime.fromtimestamp(value, timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+
+    @app.template_filter("storage_size")
+    def storage_size(value):
+        for unit, divisor in (("GB", 10**9), ("MB", 10**6), ("KB", 1000)):
+            if value >= divisor:
+                return f"{value / divisor:.1f} {unit}"
+        return f"{value} B"
 
     @app.before_request
     def protect():
@@ -424,6 +432,21 @@ def create_app(config=None):
                 "SELECT * FROM subscriptions WHERE root=? AND mode!='setup'", (config["videos_path"],))}
             rules = {(r["series"], r["season"]): dict(r) for r in db.execute(
                 "SELECT * FROM season_state WHERE root=?", (config["videos_path"],))}
+        storage = None
+        if section == "library":
+            try:
+                usage = shutil.disk_usage(config["videos_path"])
+                storage = {"total": usage.total, "free": usage.free,
+                           "percent": round(usage.free / usage.total * 100, 1)}
+            except OSError:
+                pass
+        season_sizes = {}
+        series_sizes = {}
+        for item in items:
+            if item["series"] and item["available"]:
+                key = item["series"], item["season"]
+                season_sizes[key] = season_sizes.get(key, 0) + item["size"]
+                series_sizes[item["series"]] = series_sizes.get(item["series"], 0) + item["size"]
         season_watched = {}
         latest_seasons = {}
         downloadable_seasons = {}
@@ -451,6 +474,7 @@ def create_app(config=None):
                 rule["can_download_all"] = downloadable_seasons[name, season]
         return render_template("admin.html", config=config, items=items, groups=groups, rules=rules,
                                section=section, query=query, catalog_ids=all_catalog_ids, catalog_revision=revision,
+                               storage=storage, season_sizes=season_sizes, series_sizes=series_sizes,
                                notice=request.args.get("notice", ""))
 
     @app.get("/admin/following/status")
@@ -557,17 +581,29 @@ def create_app(config=None):
             item = db.execute("SELECT * FROM media WHERE id=? AND root=?", (media_id, settings(db)["videos_path"])).fetchone()
             if not item:
                 abort(404)
-            try:
-                path = media_path(item["root"], item["path"])
-                if path != Path(item["root"]).resolve(strict=True) / item["path"]:
-                    raise ValueError("Refusing to remove a symlink target")
-                path.unlink()
-            except FileNotFoundError:
-                pass
-            except (OSError, ValueError) as error:
-                raise ValueError("Could not remove video safely. Catalog and history preserved.") from error
-            db.execute("UPDATE media SET available=0 WHERE id=?", (media_id,))
+            failed = remove_files(db, [item])
+        if failed:
+            raise ValueError("Could not remove video safely. Catalog and history preserved.")
         return redirect(url_for("admin", section="library", notice="Video removed. Details and watch history retained."))
+
+    @app.post("/admin/season/remove")
+    def remove_season():
+        series = request.form.get("series", "").strip()
+        season = request.form.get("season", "")
+        if (request.form.get("confirm") != "remove" or not series or len(series) > 300
+                or not re.fullmatch(r"\d{1,4}", season)):
+            raise ValueError("Confirm removal and choose a valid series and season")
+        with scan_lock, connect(database) as db:
+            db.execute("BEGIN IMMEDIATE")
+            items = db.execute("""SELECT * FROM media
+                WHERE root=? AND series=? AND season=? AND available=1""",
+                (settings(db)["videos_path"], series, int(season))).fetchall()
+            if not items:
+                abort(404)
+            failed = remove_files(db, items)
+        if failed:
+            raise ValueError(f"{failed} video(s) could not be removed safely. Other videos were removed; details and history retained.")
+        return redirect(url_for("admin", section="library", notice="Season videos removed. Details and watch history retained."))
 
     @app.post("/admin/settings")
     def save_settings():

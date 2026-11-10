@@ -233,7 +233,7 @@ class SeriesDownloadsTest(unittest.TestCase):
         calls = len(self.provider.calls)
         page = html.unescape(self.client.get('/admin?section=library').data.decode())
         self.assertEqual(len(self.provider.calls), calls, 'library requests must use cached provider metadata')
-        self.assertIn('3 episodes · 1 downloaded', page)
+        self.assertIn('3 episodes · 5 B · 1 downloaded', page)
         self.assertIn('Downloaded', page)
         self.assertIn('Not downloaded', page)
         self.assertIn('Provider episode 2', page)
@@ -253,6 +253,7 @@ class SeriesDownloadsTest(unittest.TestCase):
         page = self.client.get('/admin?section=library').data.decode()
         self.assertIn('Show', page)
         self.assertIn('3 episodes · 0 downloaded', page)
+        self.assertNotRegex(page, r'(?<!\d)0 B')
         self.assertNotIn('Your collection starts here', page)
 
     def test_library_download_button_queues_exact_episode_idempotently(self):

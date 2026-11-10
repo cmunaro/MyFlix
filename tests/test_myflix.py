@@ -53,6 +53,75 @@ class MyFlixTest(unittest.TestCase):
         with connect(self.database) as db:
             return dict(db.execute("SELECT * FROM media ORDER BY id LIMIT 1").fetchone())
 
+    def test_library_storage_and_sizes_include_whole_season_when_filtered(self):
+        from collections import namedtuple
+        usage = namedtuple("usage", "total used free")(350 * 10**9, 227 * 10**9, 123 * 10**9)
+        self.configure()
+        self.video("Show.S01E01.First.mp4", b"a" * 1000)
+        self.video("Show.S01E02.Second.mp4", b"b" * 2000)
+        self.video("Film.mp4", b"c" * 4000)
+        scan(self.database)
+        with patch("myflix.app.shutil.disk_usage", return_value=usage) as disk:
+            page = self.client.get("/admin?section=library").data.decode()
+            disk.assert_called_once_with(str(self.library))
+        self.assertIn("Total space: 350.0 GB · Free 123.0 GB (35.1%)", page)
+        self.assertIn('class="catalog-size">4.0 KB', page)
+        self.assertIn('class="catalog-size">1.0 KB', page)
+        self.assertIn('1 seasons · 3.0 KB', page)
+        self.assertIn('2 episodes · 3.0 KB', page)
+        self.assertIn('>Delete</button>', page)
+        self.assertNotIn('Remove video from disk', page)
+        filtered = self.client.get("/admin?section=library&q=First").data.decode()
+        self.assertIn('1 seasons · 3.0 KB', filtered)
+        self.assertIn('1 episode · 3.0 KB', filtered)
+        with patch("myflix.app.shutil.disk_usage", side_effect=FileNotFoundError):
+            self.assertIn(b"Storage unavailable", self.client.get("/admin?section=library").data)
+
+    def test_season_removal_validates_scope_preserves_history_and_sidecars(self):
+        self.configure()
+        first = self.video("Show.S01E01.First.mp4")
+        second = self.video("Show.S01E02.Second.mp4")
+        other = self.video("Show.S02E01.Other.mp4")
+        film = self.video("Film.mp4")
+        sidecar = self.library / "poster.jpg"
+        sidecar.write_bytes(b"artwork")
+        scan(self.database)
+        self.post("/admin/season", {"series": "Show", "season": "1", "action": "watched"})
+        url = "/admin/season/remove"
+        data = {"series": "Show", "season": "1", "confirm": "remove"}
+        self.assertEqual(self.client.post(url, data=data).status_code, 403)
+        self.assertEqual(self.post(url, {"series": "Show", "season": "1"}).status_code, 400)
+        self.assertEqual(self.post(url, {**data, "season": "-1"}).status_code, 400)
+        self.assertEqual(self.post(url, {**data, "series": "Unknown"}).status_code, 404)
+        self.assertTrue(first.exists())
+        self.assertEqual(self.post(url, data).status_code, 302)
+        self.assertFalse(first.exists())
+        self.assertFalse(second.exists())
+        self.assertTrue(other.exists() and film.exists() and sidecar.exists())
+        with connect(self.database) as db:
+            rows = db.execute("SELECT available,watched FROM media JOIN progress ON media_id=id WHERE season=1").fetchall()
+            self.assertEqual([tuple(row) for row in rows], [(0, 1), (0, 1)])
+        page = self.client.get("/admin?section=library").data.decode()
+        self.assertIn('2 episodes · 0 downloaded', page)
+        self.assertNotRegex(page, r'(?<!\d)0 B')
+        self.assertIn('>Download</a>', page)
+
+    def test_season_removal_partial_failure_keeps_catalog_consistent(self):
+        self.configure()
+        first = self.video("Show.S01E01.First.mp4")
+        escaped = self.video("Show.S01E02.Second.mp4")
+        scan(self.database)
+        escaped.unlink()
+        outside = self.base / "outside.mp4"
+        outside.write_bytes(b"private")
+        escaped.symlink_to(outside)
+        result = self.post("/admin/season/remove", {"series": "Show", "season": "1", "confirm": "remove"})
+        self.assertEqual(result.status_code, 400)
+        self.assertFalse(first.exists())
+        self.assertEqual(outside.read_bytes(), b"private")
+        with connect(self.database) as db:
+            self.assertEqual([tuple(row) for row in db.execute("SELECT episode,available FROM media ORDER BY episode")], [(1, 0), (2, 1)])
+
     def test_catalog_updates_track_imported_episodes_and_confine_the_current_root(self):
         self.configure()
         self.video("Show.S01E01.Start.mp4")
@@ -132,8 +201,8 @@ class MyFlixTest(unittest.TestCase):
         url = f"/admin/media/{media_id}/watched"
         page = self.client.get("/admin?section=library").data.decode()
         self.assertEqual(page.count('<details class="catalog-season"'), 2)
-        self.assertIn('<span>Season 1</span><span>2 episodes · 2 downloaded</span>', page)
-        self.assertIn('<span>Season 2</span><span>1 episode · 1 downloaded</span>', page)
+        self.assertIn('<span>Season 1</span><span>2 episodes · 20 B · 2 downloaded</span>', page)
+        self.assertIn('<span>Season 2</span><span>1 episode · 10 B · 1 downloaded</span>', page)
         summaries = re.findall(r'<details class="catalog-item"[^>]*>\s*<summary>(.*?)</summary>', page, re.S)
         self.assertEqual(len(summaries), 3)
         for summary in summaries:

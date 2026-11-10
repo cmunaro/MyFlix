@@ -1021,7 +1021,9 @@ class MonitoringTest(unittest.TestCase):
         self.assertEqual(page.count('<details class="catalog-season"'), 2)
         self.assertEqual(page.count('<details class="catalog-item"'), 4)
         self.assertIn('Mark all as watched', page)
-        self.assertIn('name="confirm" value="remove" required', page)
+        self.assertIn('>Delete</button>', page)
+        self.assertIn('>Remove all</button>', page)
+        self.assertNotIn('Remove video from disk', page)
 
     def test_alias_links_provider_output_to_selected_library_series(self):
         self.follow("My Show")

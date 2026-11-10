@@ -84,11 +84,11 @@ function screen(tv = true) {
     constructor() { this.headers = {}; }
     open(method, url) { this.method = method; this.url = url; this.action = url.split('/').pop(); }
     setRequestHeader(key, value) { this.headers[key] = value; }
-    send(body) { this.body = body && JSON.parse(body); pending.push(this); }
+    send(body) { this.body = body && (this.headers['Content-Type'] === 'application/x-www-form-urlencoded' ? body : JSON.parse(body)); pending.push(this); }
   }
-  const location = {pathname: '/admin', search: ''};
+  const location = {pathname: '/admin', search: '', reloads: 0, reload() { this.reloads += 1; }};
   const context = {document, navigator: {userAgent: tv ? 'VIDAA Hisense' : 'Firefox'}, location,
-    window: {location, pageYOffset: 120, scrollTo() {}, setInterval(fn) { intervals.push(fn); },
+    window: {location, confirm() { return location.confirmed !== false; }, pageYOffset: 120, scrollTo() {}, setInterval(fn) { intervals.push(fn); },
       addEventListener(name, fn) { (listeners[name] ||= []).push(fn); },
       DOMParser: class { parseFromString() { return {getElementById() { return incomingCatalog; }}; } }},
     sessionStorage: {getItem() { return null; }, setItem() {}}, XMLHttpRequest: XHR};
@@ -494,3 +494,30 @@ toggleNew.click(); newEpisodeSetting.reply('new-episodes', {error: 'Could not sa
 assert(!toggleNew.checked, 'failed setting restores last acknowledged state');
 assert(settingStatus.textContent.includes('Could not save'));
 console.log('New episode preference passed: checkbox persistence, CSRF, duplicate guard, failure rollback, and focus');
+
+const removal = screen();
+const removalStatus = removal.add(removal.body, 'p', {id: 'library-watch-status'});
+const deleteVideo = removal.add(removal.body, 'button', {'data-remove-url': '/admin/media/7/remove', 'data-remove-name': 'Show S1 E1'});
+const deleteSeason = removal.add(removal.body, 'button', {'data-remove-url': '/admin/season/remove', 'data-remove-name': 'Show Season 1', 'data-remove-series': 'Show & Friends', 'data-remove-season': '1'});
+removal.libraryScript();
+removal.location.confirmed = false;
+deleteVideo.click();
+assert.equal(removal.pending.length, 0, 'cancelled confirmation never deletes');
+removal.location.confirmed = true;
+prevented = false; stopped = false;
+deleteVideo.onclick({preventDefault() { prevented = true; }, stopPropagation() { stopped = true; }});
+assert(prevented && stopped, 'delete cancels summary activation');
+deleteVideo.click();
+assert.equal(removal.pending.length, 1, 'delete sends only once');
+assert.equal(removal.pending[0].headers['X-CSRF-Token'], 'csrf-token');
+assert.equal(removal.pending[0].body, 'confirm=remove');
+removal.reply('remove', {});
+assert.equal(removal.location.reloads, 1, 'success refreshes sizes and availability');
+deleteSeason.click();
+assert.equal(removal.pending[0].body, 'confirm=remove&series=Show%20%26%20Friends&season=1');
+removal.pending[0].ontimeout();
+deleteSeason.click();
+assert.equal(removal.pending.length, 1, 'uncertain delete never retries');
+assert(removalStatus.textContent.includes('Reload Library'));
+
+console.log('Library deletion passed: confirmation, CSRF, season scope, refresh, and no uncertain retries');

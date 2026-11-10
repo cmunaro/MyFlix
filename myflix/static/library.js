@@ -12,6 +12,10 @@
     for (var k = 0; k < settings.length; k += 1) {
       if (!settings[k].getAttribute('data-new-episodes-bound')) { bindNewEpisodes(settings[k]); }
     }
+    var removals = document.querySelectorAll('[data-remove-url]');
+    for (var r = 0; r < removals.length; r += 1) {
+      if (!removals[r].getAttribute('data-remove-bound')) { bindRemove(removals[r]); }
+    }
     var downloads = document.querySelectorAll('[data-download-url]');
     for (var j = 0; j < downloads.length; j += 1) {
       if (!downloads[j].getAttribute('data-download-bound')) { bindDownload(downloads[j]); }
@@ -19,6 +23,37 @@
   }
   window.MyFlixLibrary = {refresh: refresh};
   refresh();
+  function bindRemove(button) {
+    button.setAttribute('data-remove-bound', '1');
+    var sent = false;
+    button.onclick = function (event) {
+      if (event) { event.preventDefault(); event.stopPropagation(); }
+      if (sent || button.disabled || !window.confirm('Delete ' + button.getAttribute('data-remove-name') + ' from disk? Details and watch history will be kept.')) { return; }
+      sent = true;
+      button.setAttribute('aria-disabled', 'true');
+      button.setAttribute('data-action-pending', '1');
+      var request = new XMLHttpRequest();
+      request.open('POST', button.getAttribute('data-remove-url'), true);
+      request.setRequestHeader('X-CSRF-Token', document.querySelector('meta[name="csrf-token"]').content);
+      request.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
+      request.timeout = 15000;
+      function failed() {
+        button.removeAttribute('data-action-pending');
+        status.textContent = 'Removal could not be confirmed. Reload Library to check files before trying again.';
+      }
+      request.onerror = request.ontimeout = failed;
+      request.onload = function () {
+        if (request.status !== 200) { failed(); return; }
+        window.location.reload();
+      };
+      var body = 'confirm=remove';
+      if (button.hasAttribute('data-remove-series')) {
+        body += '&series=' + encodeURIComponent(button.getAttribute('data-remove-series')) +
+          '&season=' + encodeURIComponent(button.getAttribute('data-remove-season'));
+      }
+      request.send(body);
+    };
+  }
   function bindNewEpisodes(input) {
     input.setAttribute('data-new-episodes-bound', '1');
     var busy = false;
