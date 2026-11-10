@@ -95,6 +95,22 @@ class IntegrationTest(unittest.TestCase):
         self.assertNotIn(b"private-engine-secret", self.client.get("/admin").data)
         self.assertNotIn(b"VibraVid Web URL", self.client.get("/admin").data)
 
+    def test_episode_picker_uses_restricted_metadata_boundary(self):
+        episodes = [{"season": 0, "episode": 1, "title": "Special"},
+                    {"season": 2, "episode": 3, "title": "Episode"}]
+        with patch.object(self.app.extensions["vibravid"], "call", return_value={"episodes": episodes}) as call:
+            self.assertEqual(self.client.post("/admin/vibravid/episodes", json={}).status_code, 403)
+            self.assertEqual(self.client.get("/admin/vibravid/episodes").status_code, 405)
+            self.assertEqual(self.post("episodes", {"site": "example", "payload": {}}).status_code, 400)
+            self.assertEqual(self.post("metadata", {}).status_code, 405)
+            self.assertEqual(self.post("retry_download", {}).status_code, 405)
+            call.assert_not_called()
+            choice = {"site": "example", "payload": {"name": "Show", "type": "tv"}}
+            response = self.post("episodes", {**choice, "lookup_token": "must-not-reach-engine"})
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.json, {"episodes": episodes})
+            call.assert_called_once_with("episodes", choice)
+
     def test_csrf_allowlist_and_validation_prevent_engine_calls(self):
         self.assertEqual(self.client.post("/admin/vibravid/download", json={}).status_code, 403)
         self.assertEqual(self.client.get("/admin/vibravid/download").status_code, 405)

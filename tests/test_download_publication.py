@@ -88,12 +88,86 @@ class DownloadPublicationTest(unittest.TestCase):
             self.assertTrue(self.source.exists())
             self.finish()  # Duplicate completion cannot repeat publication.
             self.assertEqual(len(self.tracker.history), 1)
-            scan(self.database)
             with connect(self.database) as db:
                 media = db.execute('SELECT id FROM media').fetchone()[0]
             self.assertEqual(self.app.test_client().get('/api/playback/' + str(media)).json['credits_start'], 1200)
             self.assertFalse(self.app.extensions['credits'].step(threading.Event()))
             self.assertEqual(detector.call_count, 1, 'background indexing must reuse the pre-publication result')
+
+    def test_completion_waits_for_catalog_import_and_playback(self):
+        os.utime(self.source, None)  # A newly finished file must bypass the scan age buffer.
+        def record(identity, **kwargs):
+            if kwargs.get('success', True):
+                with connect(self.database) as db:
+                    media = db.execute('SELECT id FROM media WHERE available=1 AND hidden=0').fetchone()
+                self.assertIsNotNone(media, 'a job must remain active until its catalog entry is committed')
+                client = self.app.test_client()
+                self.assertEqual(client.get('/api/playback/' + str(media[0])).status_code, 200)
+                with client.get('/media/' + str(media[0]), headers={'Range': 'bytes=0-4'}) as response:
+                    self.assertEqual(response.status_code, 206)
+                    self.assertEqual(response.data, b'compl')
+            return original(identity, **kwargs)
+        # Install over the recording tracker so assertions run at the exact success boundary.
+        self.tracker = Tracker()
+        original = self.tracker.complete_download
+        self.tracker.complete_download = record
+        install_publication(self.tracker, self.database, self.stages)
+        with patch.object(CreditsCache, 'tools', return_value=('f', 'p')), patch('myflix.credits.analyze', return_value=None):
+            self.finish()
+        self.assertTrue(self.tracker.history[-1]['success'])
+        scan(self.database)
+        with connect(self.database) as db:
+            self.assertEqual(db.execute('SELECT available FROM media').fetchone()[0], 1,
+                             'a normal scan must not hide a freshly published file')
+
+    def test_scan_snapshot_cannot_hide_a_download_published_during_enumeration(self):
+        from myflix.catalog import library_files
+        def enumerate_then_publish(root):
+            snapshot = library_files(root)
+            self.finish()
+            return snapshot
+        with patch.object(CreditsCache, 'tools', return_value=('f', 'p')), \
+                patch('myflix.credits.analyze', return_value=None), \
+                patch('myflix.catalog.library_files', side_effect=enumerate_then_publish):
+            scan(self.database)
+        self.assertTrue(self.tracker.history[-1]['success'])
+        with connect(self.database) as db:
+            self.assertEqual(db.execute('SELECT available FROM media').fetchone()[0], 1)
+
+    def test_catalog_import_failure_never_reports_download_success(self):
+        with patch.object(CreditsCache, 'tools', return_value=('f', 'p')), \
+                patch('myflix.credits.analyze', return_value=None), \
+                patch('myflix.catalog.import_completed', side_effect=RuntimeError('Catalog unavailable')), \
+                self.assertLogs(level='ERROR'):
+            self.finish()
+        self.assertFalse(self.tracker.history[-1]['success'])
+        self.assertTrue(self.target.exists())
+        self.assertTrue(self.source.exists())
+        self.assertIn('Library publication failed', self.tracker.history[-1]['error'])
+
+    def test_publication_preserves_catalog_edits_and_watch_history(self):
+        with patch.object(CreditsCache, 'tools', return_value=('f', 'p')), patch('myflix.credits.analyze', return_value=None):
+            self.finish()
+            with connect(self.database) as db:
+                media_id = db.execute('SELECT id FROM media').fetchone()[0]
+                db.execute("UPDATE media SET title='Household title'")
+                db.execute('INSERT INTO progress(media_id,position,watched) VALUES(?,40,1)', (media_id,))
+            self.target.unlink()
+            scan(self.database)
+            self.tracker.downloads['job'] = {'status': 'Downloading'}
+            self.finish()
+        with connect(self.database) as db:
+            row = db.execute('SELECT m.id,m.title,m.available,p.position,p.watched FROM media m JOIN progress p ON p.media_id=m.id').fetchone()
+            self.assertEqual(tuple(row), (media_id, 'Household title', 1, 40, 1))
+
+    def test_modified_published_file_still_obeys_normal_scan_safety(self):
+        with patch.object(CreditsCache, 'tools', return_value=('f', 'p')), patch('myflix.credits.analyze', return_value=None):
+            self.finish()
+        self.target.write_bytes(b'incomplete-replacement')
+        scan(self.database)
+        with connect(self.database) as db:
+            self.assertEqual(db.execute('SELECT available FROM media').fetchone()[0], 0)
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM published_media').fetchone()[0], 0)
 
     def test_inconclusive_and_failed_detection_still_publish_with_fallback(self):
         for error in [None, RuntimeError('Frame extraction failed')]:
@@ -144,6 +218,9 @@ class DownloadPublicationTest(unittest.TestCase):
             with self.assertLogs(level='ERROR'):
                 self.finish()
             self.assertFalse(self.tracker.history[-1]['success'])
+            self.assertIn('already exists in the library', self.tracker.history[-1]['error'])
+            self.assertIn('Nothing was overwritten', self.tracker.history[-1]['error'])
+            self.assertEqual(self.source.read_bytes(), b'completed-video')
             self.assertEqual(self.target.read_bytes(), b'existing-video')
             detector.assert_not_called()
 

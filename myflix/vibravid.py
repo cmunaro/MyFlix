@@ -58,7 +58,7 @@ class VibraVid:
             if action == "episodes" and (isinstance(error, TimeoutError)
                     or isinstance(getattr(error, "reason", None), TimeoutError)):
                 raise VibraVidError(
-                    "Episode lookup timed out. Use Save & check now in Following to retry."
+                    "Episode lookup timed out. Try loading the episode list again."
                 ) from error
             # A timed-out download request may already have queued work. Never
             # retry mutations automatically or expose upstream response content.

@@ -35,6 +35,10 @@ def initialize(path):
                 added_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 UNIQUE(root, path)
             );
+            CREATE TABLE IF NOT EXISTS published_media (
+                media_id INTEGER PRIMARY KEY REFERENCES media(id) ON DELETE CASCADE,
+                size INTEGER NOT NULL, mtime_ns INTEGER NOT NULL
+            );
             CREATE TABLE IF NOT EXISTS progress (
                 media_id INTEGER PRIMARY KEY REFERENCES media(id),
                 position REAL NOT NULL DEFAULT 0,

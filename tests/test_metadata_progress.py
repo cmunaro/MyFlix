@@ -58,3 +58,37 @@ class MetadataProgressTest(unittest.TestCase):
         observe_metadata(api, lambda *args: updates.append(args))
         api.set_cached_scraper("series", scraper)
         self.assertEqual(updates, [])
+
+    def test_latest_season_skips_older_episode_requests_and_discovers_new_seasons(self):
+        for numbers in ([0, 1, 3], [0, 1, 3, 4]):
+            with self.subTest(numbers=numbers):
+                requested = []
+                scraper = SimpleNamespace(
+                    seasons_manager=SimpleNamespace(seasons=[]),
+                    getEpisodeSeasons=lambda number: requested.append(number) or ["episode"],
+                )
+                def count():
+                    scraper.seasons_manager.seasons[:] = [SimpleNamespace(number=n) for n in numbers]
+                    return len(numbers)
+                scraper.getNumberSeason = count
+                api = SimpleNamespace(set_cached_scraper=lambda *args: None)
+                updates = []
+                observe_metadata(api, lambda *args: updates.append(args), latest_only=True)
+                api.set_cached_scraper("show", scraper)
+                scraper.getNumberSeason()
+                for season in scraper.seasons_manager.seasons:
+                    scraper.getEpisodeSeasons(season.number)
+                self.assertEqual(requested, [max(numbers)])
+                self.assertEqual(updates[-1], (1, 1, 1, 0))
+
+    def test_initial_lookup_keeps_all_seasons_and_latest_scope_is_request_local(self):
+        original = {"shared": object()}
+        api = SimpleNamespace(_scraper_cache=original, set_cached_scraper=lambda *args: None)
+        numbers = [SimpleNamespace(number=1), SimpleNamespace(number=2)]
+        scraper = SimpleNamespace(seasons_manager=SimpleNamespace(seasons=numbers[:]),
+                                  getNumberSeason=lambda: 2, getEpisodeSeasons=lambda n: [n])
+        observe_metadata(api, lambda *args: None)
+        api.set_cached_scraper("show", scraper)
+        scraper.getNumberSeason()
+        self.assertEqual([s.number for s in scraper.seasons_manager.seasons], [1, 2])
+        self.assertEqual(list(original), ["shared"])

@@ -155,12 +155,49 @@ class DownloadRetries:
                                (subscription["id"], season, episode))
         return queued
 
+    @staticmethod
+    def _available_failure(db, root, item):
+        """Resolve only an exact film or episode backed by a confined library file."""
+        from .catalog import media_path
+
+        request = db.execute("SELECT body FROM download_requests WHERE root=? AND download_id=?",
+                             (root, item.get("id", ""))).fetchone()
+        body = json.loads(request["body"]) if request else {}
+        payload = body.get("payload", {})
+        if payload.get("is_movie"):
+            rows = db.execute("SELECT path,title FROM media WHERE root=? AND series='' AND available=1", (root,)).fetchall()
+            rows = [row for row in rows if _movie_title_matches(row["title"], payload)]
+        else:
+            site, name, _, _ = target_key(item)
+            match = re.search(r" - S(\d+) E(\d+)$", item.get("title") or "")
+            try:
+                season = int(item.get("season") if item.get("season") is not None else match[1] if match else body.get("season", ""))
+                episode = int(item.get("episode") if item.get("episode") is not None else match[2] if match else body.get("episodes", ""))
+            except (ValueError, TypeError):
+                return False  # A range or a series-wide failure is not an exact episode.
+            names = {name, payload.get("name", name)}
+            for subscription in db.execute("SELECT * FROM subscriptions WHERE root=? AND site=?", (root, site)):
+                if DownloadRetries.matches(item, subscription):
+                    names.add(subscription["series"])
+            rows = db.execute("SELECT path,series FROM media WHERE root=? AND season=? AND episode=? AND available=1",
+                              (root, season, episode)).fetchall()
+            rows = [row for row in rows if row["series"] in names]
+        for row in rows:
+            try:
+                if media_path(root, row["path"]).stat().st_size:
+                    return True
+            except (OSError, ValueError):
+                continue
+        return False
+
     def present(self, queue):
         """Remove retried attempts from failures, while retaining new retry failures."""
         with connect(self.database) as db:
             root = settings(db)["videos_path"]
             retries = db.execute("SELECT * FROM download_retries WHERE root=? ORDER BY id", (root,)).fetchall()
             hidden = {row["source_key"] for row in retries}
+            completed = {row["download_id"] for row in db.execute(
+                "SELECT download_id FROM download_request_state WHERE root=? AND state='completed'", (root,))}
             retired = {}
             for row in retries:
                 source = json.loads(row["source"])
@@ -179,6 +216,8 @@ class DownloadRetries:
                                  "start_time": item["submitted_at"]})
             unique = {}
             for item in sorted(failures, key=lambda item: item.get("end_time") or item.get("start_time") or 0):
+                if item.get("status") == "failed" and (item.get("id") in completed or self._available_failure(db, root, item)):
+                    continue
                 key = failure_key(item)
                 retried = target_key(item) in retired and (item.get("start_time") or 0) <= retired[target_key(item)]
                 if key not in hidden and not retried:
@@ -341,8 +380,12 @@ class DownloadRetries:
             root = settings(db)["videos_path"]
             for item in queue.get("history", []):
                 if item.get("status") in ("failed", "completed", "cancelled"):
-                    db.execute("UPDATE download_request_state SET state=? WHERE root=? AND download_id=? AND state='submitted'",
-                               (item["status"], root, item.get("id", "")))
+                    if item["status"] == "failed" and self._available_failure(db, root, item):
+                        db.execute("UPDATE download_request_state SET state='completed' WHERE root=? AND download_id=? AND state IN ('submitted','failed')",
+                                   (root, item.get("id", "")))
+                    else:
+                        db.execute("UPDATE download_request_state SET state=? WHERE root=? AND download_id=? AND state='submitted'",
+                                   (item["status"], root, item.get("id", "")))
             for request in _submitted_requests(db, root):
                 body = json.loads(request["body"])
                 if not body["payload"].get("is_movie") and (not str(body.get("season", "")).isdigit()

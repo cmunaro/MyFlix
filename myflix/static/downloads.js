@@ -8,6 +8,8 @@
   var queueMessage = document.getElementById('queue-message');
   var queueBusy = false;
   var searchBusy = false;
+  var selectionBusy = false;
+  var pickerSequence = 0;
   var cancelPending = {};
   var retryButton = document.getElementById('retry-failed-downloads');
   var retryBusy = false;
@@ -28,9 +30,9 @@
   }
   function api(action, body, done) {
     var xhr = new XMLHttpRequest();
-    xhr.open(body === null ? 'GET' : 'POST', action === 'follow' ? '/admin/follow' : action === 'retry-failed' ? '/admin/downloads/retry-failed' : '/admin/vibravid/' + action, true);
+    xhr.open(body === null ? 'GET' : 'POST', action === 'retry-failed' ? '/admin/downloads/retry-failed' : '/admin/vibravid/' + action, true);
     xhr.setRequestHeader('Accept', 'application/json');
-    xhr.timeout = 35000;
+    xhr.timeout = action === 'episodes' ? 310000 : 35000;
     if (body !== null) { xhr.setRequestHeader('Content-Type', 'application/json'); xhr.setRequestHeader('X-CSRF-Token', token); }
     xhr.onload = function () {
       var data;
@@ -69,7 +71,7 @@
           var episode = episodeDetails(item);
           if (episode) { info.appendChild(node('p', episode)); }
           var progress = Number(item.progress);
-          info.appendChild(node('p', [item.priority ? 'Priority retry' : '', item.site, item.status, group !== 'retrying' && isFinite(progress) && item.progress !== undefined ? progress.toFixed(1) + '%' : '', group !== 'retrying' ? item.speed : ''].filter(Boolean).join(' · ')));
+          info.appendChild(node('p', [item.priority ? 'Priority retry' : '', item.site, item.status, group === 'active' && isFinite(progress) && item.progress !== undefined ? progress.toFixed(1) + '%' : '', group === 'active' ? item.speed : ''].filter(Boolean).join(' · ')));
           if (group === 'failed') {
             info.appendChild(node('p', item.error || 'Download failed; the engine supplied no details.', 'error'));
             var following = node('a', 'Review episodes in Following', 'button secondary');
@@ -127,23 +129,6 @@
     var payload = item.payload || {};
     var busy = false;
     payload.is_movie = Boolean(item.is_movie);
-    if (!item.is_movie) {
-      var seriesLabel = node('label', 'Library series name (links watch history)');
-      var seriesName = node('input'); seriesName.value = item.title || payload.name || ''; seriesName.maxLength = 300;
-      seriesLabel.appendChild(seriesName); controls.appendChild(seriesLabel);
-      var follow = node('button', 'Follow series'); follow.type = 'button'; controls.appendChild(follow);
-      var following = false;
-      follow.onclick = function () {
-        if (following) { return; }
-        following = true; follow.setAttribute('aria-disabled', 'true');
-        api('follow', {site: item.site, payload: payload, series: seriesName.value}, function (error) {
-          message.textContent = error || 'Following series. Episode lookup queued. Track fetching progress and any errors in Followed series checks below. Missing unwatched episodes will start downloading automatically after the episode list is ready; watched episodes and excluded seasons are skipped.';
-          follow.textContent = error ? 'Check Following before retrying' : 'Following';
-        });
-      };
-      var followingLink = node('a', 'Manage followed series', 'button secondary');
-      followingLink.href = '/admin?section=following'; controls.appendChild(followingLink);
-    }
     function download(season, episodes) {
       if (busy) { return; }
       busy = true;
@@ -163,29 +148,150 @@
       if (item.is_movie) { download(); return; }
       busy = true;
       choose.setAttribute('aria-disabled', 'true');
-      api('seasons', {site: item.site, payload: payload}, function (error, data) {
+      message.textContent = 'Loading seasons and episodes… Large series can take several minutes.';
+      api('episodes', {site: item.site, payload: payload}, function (error, data) {
         busy = false;
+        if (!results.contains(article)) { return; }
         choose.removeAttribute('aria-disabled');
         if (error) { message.textContent = error; return; }
-        if (!data.seasons || !data.seasons.length) { message.textContent = 'No seasons available from this provider.'; return; }
-        var label = node('label', 'Season');
-        var season = node('select');
-        season.setAttribute('aria-label', 'Season for ' + item.title);
-        data.seasons.forEach(function (s) { var option = node('option', 'Season ' + s.number + ' · ' + s.episodes + ' episodes'); option.value = s.number; season.appendChild(option); });
-        label.appendChild(season);
-        var epLabel = node('label', 'Episodes');
-        var episodes = node('input'); episodes.value = '*'; episodes.maxLength = 200; episodes.setAttribute('aria-label', 'Episodes: * for all, 1-4, or 1,3'); epLabel.appendChild(episodes);
-        controls.insertBefore(label, choose); controls.insertBefore(epLabel, choose);
-        choose.textContent = 'Download episodes';
-        choose.onclick = function () { download(season.value, episodes.value); };
-        if (document.activeElement === choose) { season.focus(); }
+        if (!data || !Array.isArray(data.episodes) || !data.episodes.length) { message.textContent = 'No episodes available from this provider.'; return; }
+        if (data.episodes.length > 20000 || data.episodes.some(function (episode) {
+          return !episode || typeof episode.season !== 'number' || episode.season % 1 || episode.season < 0 || episode.season > 999 ||
+            typeof episode.episode !== 'number' || episode.episode % 1 || episode.episode < 1 || episode.episode > 9999;
+        })) { message.textContent = 'Provider episode numbering is unsupported.'; return; }
+        var seasons = [];
+        var grouped = {};
+        var seen = {};
+        data.episodes.forEach(function (episode) {
+          var key = String(episode.season);
+          if (!grouped[key]) { grouped[key] = []; seasons.push(Number(key)); }
+          var identity = key + ':' + episode.episode;
+          if (!seen[identity]) {
+            seen[identity] = true;
+            grouped[key].push(episode);
+          }
+        });
+        seasons.sort(function (a, b) { return a - b; });
+        var picker = node('div', undefined, 'episode-picker');
+        var selections = [];
+        var allLabel = node('label', 'All seasons', 'checkbox');
+        var all = node('input'); all.type = 'checkbox'; all.checked = true;
+        allLabel.insertBefore(all, allLabel.firstChild || null);
+        picker.appendChild(allLabel);
+        all.onchange = function () {
+          selections.forEach(function (selection) {
+            selection.episodes.forEach(function (entry) { entry.checkbox.checked = all.checked; });
+          });
+          sync();
+        };
+        var submit = node('button', 'Download'); submit.type = 'button';
+        function sync() {
+          var count = 0;
+          selections.forEach(function (selection) {
+            var selected = selection.episodes.filter(function (entry) { return entry.checkbox.checked; }).length;
+            selection.checkbox.checked = selected === selection.episodes.length;
+            selection.checkbox.indeterminate = selected > 0 && selected < selection.episodes.length;
+            count += selected;
+          });
+          var total = selections.reduce(function (sum, selection) { return sum + selection.episodes.length; }, 0);
+          all.checked = count === total;
+          all.indeterminate = count > 0 && count < total;
+          submit.setAttribute('aria-disabled', count ? 'false' : 'true');
+        }
+        seasons.forEach(function (number) {
+          var section = node('div', undefined, 'episode-season');
+          var header = node('div', undefined, 'episode-season-heading');
+          var label = node('label', 'Season ' + number, 'checkbox');
+          var checkbox = node('input'); checkbox.type = 'checkbox'; checkbox.checked = true;
+          label.insertBefore(checkbox, label.firstChild || null);
+          header.appendChild(label);
+          var expand = node('button', '▸'); expand.type = 'button';
+          var list = node('div', undefined, 'episode-list'); list.hidden = true;
+          list.id = 'episode-list-' + (++pickerSequence);
+          expand.setAttribute('aria-label', 'Expand season ' + number);
+          expand.setAttribute('aria-expanded', 'false');
+          expand.setAttribute('aria-controls', list.id);
+          expand.onclick = function () {
+            list.hidden = !list.hidden;
+            expand.textContent = list.hidden ? '▸' : '▾';
+            expand.setAttribute('aria-expanded', list.hidden ? 'false' : 'true');
+            expand.setAttribute('aria-label', (list.hidden ? 'Expand' : 'Collapse') + ' season ' + number);
+          };
+          header.appendChild(expand); section.appendChild(header);
+          var selection = {number: number, checkbox: checkbox, episodes: []};
+          grouped[String(number)].sort(function (a, b) { return a.episode - b.episode; }).forEach(function (episode) {
+            var episodeLabel = node('label', 'Episode ' + episode.episode + (episode.title ? ' · ' + episode.title : ''), 'checkbox');
+            var input = node('input'); input.type = 'checkbox'; input.checked = true;
+            episodeLabel.insertBefore(input, episodeLabel.firstChild || null);
+            input.onchange = sync;
+            selection.episodes.push({number: episode.episode, checkbox: input});
+            list.appendChild(episodeLabel);
+          });
+          checkbox.onchange = function () {
+            selection.episodes.forEach(function (entry) { entry.checkbox.checked = checkbox.checked; });
+            sync();
+          };
+          selections.push(selection); section.appendChild(list); picker.appendChild(section);
+        });
+        picker.appendChild(submit);
+        controls.appendChild(picker);
+        choose.hidden = true;
+        message.textContent = 'Select seasons or expand a season to choose individual episodes.';
+        all.focus();
+        submit.onclick = function () {
+          if (busy || selectionBusy) { return; }
+          var requests = [];
+          selections.forEach(function (selection) {
+            var numbers = selection.episodes.filter(function (entry) { return entry.checkbox.checked; }).map(function (entry) { return entry.number; });
+            // Keep each engine selection within the server's validated length.
+            var parts = [], start, end;
+            function range() { if (start !== undefined) { parts.push(start === end ? String(start) : start + '-' + end); } }
+            numbers.forEach(function (number) {
+              if (end !== undefined && number === end + 1) { end = number; }
+              else { range(); start = end = number; }
+            });
+            range();
+            var chunk = '';
+            parts.forEach(function (part) {
+              if (chunk && chunk.length + part.length + 1 > 200) {
+                requests.push({season: String(selection.number), episodes: chunk}); chunk = '';
+              }
+              chunk += (chunk ? ',' : '') + part;
+            });
+            if (chunk) { requests.push({season: String(selection.number), episodes: chunk}); }
+          });
+          if (!requests.length) { message.textContent = 'Select at least one episode.'; return; }
+          busy = selectionBusy = true;
+          submit.setAttribute('aria-disabled', 'true'); submit.textContent = 'Sending…';
+          Array.prototype.forEach.call(picker.querySelectorAll('input'), function (input) { input.disabled = true; });
+          var sent = 0;
+          function sendNext() {
+            var request = requests[sent];
+            api('download', {site: item.site, payload: payload, season: request.season, episodes: request.episodes}, function (error, result) {
+              if (error || !result || result.queued !== true) {
+                selectionBusy = false;
+                message.textContent = (error || 'Download was not acknowledged.') + ' ' + sent + ' of ' + requests.length + ' selections accepted. Check the queue before retrying.';
+                submit.textContent = 'Request unconfirmed — check queue';
+                refreshQueue(); return;
+              }
+              sent += 1;
+              if (sent < requests.length) { sendNext(); return; }
+              selectionBusy = false;
+              message.textContent = 'Queued: ' + item.title + '. Selected episodes will appear in your library when ready.';
+              results.textContent = '';
+              document.getElementById('search-downloads').focus();
+              refreshQueue();
+            });
+          }
+          sendNext();
+        };
       });
     };
     return article;
   }
   document.getElementById('download-search').onsubmit = function (event) {
     event.preventDefault();
-    if (searchBusy) { return; }
+    if (searchBusy || selectionBusy) { return; }
     searchBusy = true;
     var button = document.getElementById('search-downloads'); button.setAttribute('aria-disabled', 'true');
     message.textContent = 'Searching providers…'; results.textContent = '';

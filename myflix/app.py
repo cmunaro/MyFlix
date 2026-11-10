@@ -214,6 +214,23 @@ def create_app(config=None):
             abort(404)
         return render_template("discover.html", item=item)
 
+    @app.get("/api/catalog/ids")
+    def catalog_ids():
+        series_id = request.args.get("series_id")
+        series_name = None
+        if series_id is not None:
+            if not re.fullmatch(r"[0-9]{1,19}", series_id) or int(series_id) > 2**63 - 1:
+                abort(400)
+            series_name = get_media(int(series_id))["series"]
+        with connect(database) as db:
+            root = settings(db)["videos_path"]
+            if series_name is None:
+                rows = db.execute("SELECT id FROM media WHERE root=? ORDER BY id", (root,)).fetchall()
+            else:
+                rows = db.execute("SELECT id FROM media WHERE root=? AND series=? AND available=1 AND hidden=0 ORDER BY id",
+                                  (root, series_name)).fetchall()
+        return jsonify(ids=[row["id"] for row in rows])
+
     @app.get("/series/<int:media_id>")
     def series(media_id):
         item = decorate(get_media(media_id))
@@ -230,7 +247,7 @@ def create_app(config=None):
             episode = decorate(episode)
             episode["href"] = url_for("watch", media_id=episode["id"])
             seasons.setdefault(episode["season"], []).append(episode)
-        return render_template("series.html", featured=item, seasons=seasons)
+        return render_template("series.html", featured=item, seasons=seasons, catalog_ids=sorted(row["id"] for row in episodes))
 
     @app.get("/title/<int:media_id>")
     def title(media_id):
@@ -359,6 +376,7 @@ def create_app(config=None):
                 subscription["seasons"] = sorted({e["season"] for e in subscription["episodes"]})
             rules = {(r["series"], r["season"]): dict(r) for r in db.execute(
                 "SELECT * FROM season_state WHERE root=?", (config["videos_path"],))}
+        all_catalog_ids = sorted(item["id"] for item in items)
         if section == "removed":
             items = [item for item in items if item["watched"] and not item["available"]]
         if query:
@@ -368,7 +386,7 @@ def create_app(config=None):
             if item["series"]:
                 groups.setdefault(item["series"], {}).setdefault(item["season"], []).append(item)
         return render_template("admin.html", config=config, items=items, groups=groups, rules=rules,
-                               subscriptions=subscriptions, section=section, query=query,
+                               subscriptions=subscriptions, section=section, query=query, catalog_ids=all_catalog_ids,
                                notice=request.args.get("notice", ""))
 
     @app.get("/admin/following/status")
@@ -527,7 +545,7 @@ def create_app(config=None):
                 abort(405)
             body = None
         else:
-            if action not in VibraVid.WRITE:
+            if action not in VibraVid.WRITE and action != "episodes":
                 abort(405)
             body = request.get_json()
             if not isinstance(body, dict):
@@ -538,7 +556,7 @@ def create_app(config=None):
                 if not isinstance(query, str) or not query.strip() or len(query) > 200 or not isinstance(site, str) or len(site) > 100:
                     abort(400, "Enter a search title and provider")
                 body = {"query": query.strip(), "site": site}
-            elif action in ("seasons", "download"):
+            elif action in ("seasons", "episodes", "download"):
                 if not isinstance(body.get("site"), str) or not body["site"] or not isinstance(body.get("payload"), dict) or not body["payload"]:
                     abort(400, "Select a search result first")
                 body = {key: body[key] for key in ("site", "payload", "season", "episodes") if key in body}

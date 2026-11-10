@@ -135,7 +135,8 @@ class SeriesMonitor:
                 WHERE id=?""", (token, subscription["id"]))
         try:
             result = self.engine.call("episodes", {"site": subscription["site"],
-                "payload": json.loads(subscription["payload"]), "lookup_token": token})
+                "payload": json.loads(subscription["payload"]), "lookup_token": token,
+                "latest_only": bool(current["initialized"])})
             self._finish_check(subscription, result, token)
         except Exception as error:
             message = str(error) if isinstance(error, (VibraVidError, ValueError)) else "Episode lookup failed. Check the service logs."
@@ -149,6 +150,10 @@ class SeriesMonitor:
         episodes = result.get("episodes")
         if not isinstance(episodes, list) or len(episodes) > 20000:
             raise VibraVidError("Invalid episode metadata; previous discoveries preserved")
+        checked_seasons = result.get("checked_seasons")
+        if checked_seasons is not None and (not isinstance(checked_seasons, list) or len(checked_seasons) > 1
+                or any(type(number) is not int or not 0 <= number <= 999 for number in checked_seasons)):
+            raise VibraVidError("Invalid episode lookup scope; previous discoveries preserved")
         found = {}
         for item in episodes:
             if not isinstance(item, dict):
@@ -160,6 +165,8 @@ class SeriesMonitor:
             title = item.get("title", "")
             if not isinstance(title, str):
                 raise VibraVidError("Invalid episode title")
+            if checked_seasons is not None and season not in checked_seasons:
+                raise VibraVidError("Episode outside the checked season; previous discoveries preserved")
             found[season, episode] = title[:300]
         with connect(self.database) as db:
             db.execute("BEGIN IMMEDIATE")
@@ -169,13 +176,17 @@ class SeriesMonitor:
             if current["mode"] == "paused":
                 db.execute("UPDATE subscriptions SET lookup_state='',lookup_token='' WHERE id=?", (current["id"],))
                 return
-            db.execute("UPDATE discoveries SET listed=0 WHERE subscription_id=?", (current["id"],))
+            if checked_seasons is None:
+                db.execute("UPDATE discoveries SET listed=0 WHERE subscription_id=?", (current["id"],))
+            elif checked_seasons:
+                db.execute("UPDATE discoveries SET listed=0 WHERE subscription_id=? AND season=?",
+                           (current["id"], checked_seasons[0]))
             for (season, episode), title in found.items():
                 db.execute("""INSERT INTO discoveries(subscription_id,season,episode,title,state)
                     VALUES(?,?,?,?,?) ON CONFLICT(subscription_id,season,episode)
                     DO UPDATE SET title=excluded.title,listed=1""",
                     (current["id"], season, episode, title, "new"))
-            season_count = len({season for season, episode in found})
+            season_count = len(checked_seasons) if checked_seasons is not None else len({season for season, episode in found})
             db.execute("""UPDATE subscriptions SET initialized=?,checked_at=?,next_check=?,error='',lookup_state='complete',lookup_token='',
                 lookup_episodes=?,lookup_seasons_done=?,lookup_seasons_total=? WHERE id=?""",
                        (bool(found) or current["initialized"], int(time.time()), int(time.time()) + INTERVAL, len(found),

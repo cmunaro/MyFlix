@@ -10,7 +10,7 @@
 {% endmacro %}
 
 {% macro media_editor(item,subscriptions,removed=false) %}
-<details class="catalog-item">
+<details class="catalog-item" data-catalog-key="media:{{ item.id }}">
   <summary><span class="catalog-title">{{ item.title }}{% if item.series %}<small>S{{ item.season }} · E{{ item.episode }}</small>{% endif %}</span>{% if item.series %}<button type="button" class="secondary catalog-watch" data-watch-url="{{ url_for('mark_watched',media_id=item.id) }}" data-watched="{{ 1 if item.watched else 0 }}" aria-label="{{ 'Mark as unwatched' if item.watched else 'Mark as watched' }}: {{ item.series }} S{{ item.season }} E{{ item.episode }}" data-episode-name="{{ item.series }} S{{ item.season }} E{{ item.episode }}">{{ 'Mark as unwatched' if item.watched else 'Mark as watched' }}</button>{% endif %}<span data-watch-state data-availability="{{ 'Hidden' if item.hidden else 'Ready' if item.available else 'Removed / missing' }}" class="catalog-state {{ 'is-hidden' if item.hidden else 'is-ready' if item.available else 'is-missing' }}">{{ 'Watched · ' if item.watched else '' }}{{ 'Hidden' if item.hidden else 'Ready' if item.available else 'Removed / missing' }}</span><span class="catalog-chevron" aria-hidden="true">⌄</span></summary>
   <form method="post" action="{{ url_for('edit_media',media_id=item.id) }}" class="edit-form">
     <input type="hidden" name="csrf" value="{{ session.csrf }}">

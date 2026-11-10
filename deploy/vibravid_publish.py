@@ -105,6 +105,10 @@ def publish_completed(source, downloads, *, database=None, library=None, stop=No
                 publish(companion, downloads, library, stop=stop)
             except FileExistsError:
                 pass  # Keep artwork published with an earlier episode.
+    if database:
+        from myflix.catalog import import_completed
+
+        import_completed(database, target, library)
     return target
 
 

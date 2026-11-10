@@ -5,7 +5,7 @@ const vm = require('node:vm');
 
 function screen(tv = true) {
   const listeners = {}, pending = [], intervals = [];
-  let document;
+  let document, incomingCatalog;
   class Element {
     constructor(tag, attrs = {}, rect = {}) {
       this.tagName = tag.toUpperCase(); this.attrs = {...attrs}; this.children = [];
@@ -22,6 +22,9 @@ function screen(tv = true) {
       this.children = []; this._text = value;
     }
     get textContent() { return this._text + this.children.map(child => child.textContent).join(' '); }
+    get innerHTML() { return this.children.slice(); }
+    set innerHTML(children) { this.textContent = ''; children.forEach(child => this.appendChild(child)); }
+    addEventListener(name, handler) { (this.handlers ||= {})[name] = handler; }
     set hidden(value) { this._hidden = Boolean(value); this.offsetWidth = value ? 0 : this.rect.width; this.offsetHeight = value ? 0 : this.rect.height; }
     get hidden() { return this._hidden; }
     appendChild(child) { child.parentNode = this; this.children.push(child); return child; }
@@ -34,7 +37,10 @@ function screen(tv = true) {
     matches(selector) {
       if (selector === 'details[open]') return this.tagName === 'DETAILS' && this.open;
       if (selector[0] === '.') return this.className.split(' ').includes(selector.slice(1));
-      if (selector[0] === '[') return this.hasAttribute(selector.slice(1, -1));
+      if (selector[0] === '[') {
+        const match = selector.match(/^\[([^=\]]+)(?:="([^"]*)")?\]$/);
+        return match && this.hasAttribute(match[1]) && (match[2] === undefined || this.getAttribute(match[1]) === match[2]);
+      }
       return this.tagName.toLowerCase() === selector.toLowerCase();
     }
     querySelectorAll(selector) {
@@ -46,7 +52,7 @@ function screen(tv = true) {
     getBoundingClientRect() { return this.rect; }
     scrollIntoView() { this.scrolled = true; }
     focus() { document.activeElement = this; (listeners.focusin || []).forEach(fn => fn({target: this})); }
-    click() { this.clicks++; if (this.type === 'checkbox') this.checked = !this.checked; if (this.onclick) this.onclick(); }
+    click() { this.clicks++; if (this.disabled) return; if (this.type === 'checkbox') { this.checked = !this.checked; if (this.onchange) this.onchange(); } if (this.onclick) this.onclick(); }
   }
   const body = new Element('body'); body.className = 'tv-admin';
   const add = (parent, tag, attrs, rect) => parent.appendChild(new Element(tag, attrs, rect));
@@ -82,7 +88,9 @@ function screen(tv = true) {
   }
   const location = {pathname: '/admin', search: ''};
   const context = {document, navigator: {userAgent: tv ? 'VIDAA Hisense' : 'Firefox'}, location,
-    window: {pageYOffset: 0, scrollTo() {}, setInterval(fn) { intervals.push(fn); }},
+    window: {location, pageYOffset: 120, scrollTo() {}, setInterval(fn) { intervals.push(fn); },
+      addEventListener(name, fn) { (listeners[name] ||= []).push(fn); },
+      DOMParser: class { parseFromString() { return {getElementById() { return incomingCatalog; }}; } }},
     sessionStorage: {getItem() { return null; }, setItem() {}}, XMLHttpRequest: XHR};
   vm.runInNewContext(fs.readFileSync('myflix/static/tv.js', 'utf8'), context);
   function key(code) {
@@ -96,6 +104,7 @@ function screen(tv = true) {
   }
   return {document, body, add, current, library, query, provider, search, refresh, form, key, location, pending, reply, intervals,
     downloads() { vm.runInNewContext(fs.readFileSync('myflix/static/downloads.js', 'utf8'), context); },
+    catalogScript(incoming) { incomingCatalog = incoming; vm.runInNewContext(fs.readFileSync('myflix/static/catalog.js', 'utf8'), context); },
     libraryScript() { vm.runInNewContext(fs.readFileSync('myflix/static/library.js', 'utf8'), context); },
     el(id) { return document.getElementById(id); }};
 }
@@ -176,36 +185,85 @@ assert.equal(ui.pending.filter(xhr => xhr.action === 'search').length, 1, 'searc
 ui.reply('search', {results: [{title: 'I Simpson', site: 'example', is_movie: false, payload: {name: 'I Simpson', type: 'tv', id: 'simpson'}}]});
 const choose = ui.el('download-results').querySelector('button');
 assert.equal(ui.document.activeElement, choose, 'results receive focus when search action is focused');
-choose.click(); choose.click(); assert.equal(ui.pending.filter(xhr => xhr.action === 'seasons').length, 1);
-ui.reply('seasons', {seasons: [{number: 1, episodes: 13}]});
-assert.equal(ui.document.activeElement.tagName, 'SELECT', 'season selection receives focus');
-choose.focus(); choose.click(); choose.click();
-assert.equal(ui.pending.filter(xhr => xhr.action === 'download').length, 1, 'download mutation cannot duplicate');
+assert.equal(ui.el('download-results').querySelectorAll('button').length, 1, 'series exposes only Choose episodes');
+assert.equal(ui.el('download-results').querySelectorAll('input').length, 0, 'no library name field');
+choose.click(); choose.click(); assert.equal(ui.pending.filter(xhr => xhr.action === 'episodes').length, 1);
+const metadataRequest = ui.reply('episodes', {episodes: [
+  {season: 0, episode: 1, title: 'Special'},
+  {season: 1, episode: 1, title: 'Pilot <script>safe</script>'},
+  {season: 1, episode: 3, title: 'Third'},
+  {season: 2, episode: 1}, {season: 2, episode: 2}
+]});
+assert.equal(metadataRequest.timeout, 310000, 'long metadata lookup has its own request budget');
+assert.equal(metadataRequest.headers['X-CSRF-Token'], 'csrf-token');
+const picker = ui.el('download-results').querySelector('.episode-picker');
+const sections = picker.querySelectorAll('.episode-season');
+const inputs = section => section.querySelectorAll('input');
+assert(picker.querySelectorAll('input').every(input => input.checked), 'all seasons and episodes default selected');
+const allSeasons = picker.querySelector('input');
+assert.equal(ui.document.activeElement, allSeasons, 'all seasons receives remote focus');
+ui.key(13);
+assert(picker.querySelectorAll('input').every(input => !input.checked && !input.indeterminate), 'remote clears every season and episode');
+ui.key(13);
+assert(picker.querySelectorAll('input').every(input => input.checked && !input.indeterminate), 'remote selects every season and episode');
+assert(!picker.querySelector('script'), 'episode title is safe text');
+const arrow = sections[1].querySelector('button');
+const list = sections[1].querySelector('.episode-list');
+assert(list.hidden); arrow.click(); assert(!list.hidden); assert.equal(arrow.getAttribute('aria-expanded'), 'true');
+arrow.click(); assert(list.hidden);
+inputs(sections[1])[1].focus(); ui.key(13);
+assert(!inputs(sections[1])[0].checked && inputs(sections[1])[0].indeterminate, 'remote toggles episode and sets mixed season state');
+assert(!allSeasons.checked && allSeasons.indeterminate, 'episode choice sets mixed all seasons state');
+inputs(sections[1])[0].click();
+assert(inputs(sections[1]).every(input => input.checked), 'season selects all episodes');
+assert(allSeasons.checked && !allSeasons.indeterminate, 'restoring season checks all seasons');
+inputs(sections[1])[0].click();
+assert(inputs(sections[1]).every(input => !input.checked), 'season clears all episodes');
+inputs(sections[1])[2].click();
+assert(inputs(sections[1])[0].indeterminate, 'individual selection updates season');
+inputs(sections[0])[0].click();
+inputs(sections[2])[0].click();
+inputs(sections[1])[2].click();
+const submit = picker.querySelectorAll('button').find(button => button.textContent === 'Download');
+assert(!allSeasons.checked && !allSeasons.indeterminate, 'empty selection clears all seasons state');
+submit.click(); assert(!ui.pending.some(xhr => xhr.action === 'download'), 'empty selection cannot submit');
+inputs(sections[0])[0].click(); inputs(sections[1])[2].click(); inputs(sections[2])[0].click();
+submit.focus(); submit.click(); submit.click();
+assert.equal(ui.pending.filter(xhr => xhr.action === 'download').length, 1, 'only one mutation in flight');
+const first = ui.reply('download', {queued: true});
+assert.equal(first.body.season, '0', 'special season is supported');
+assert.equal(first.body.episodes, '1');
+const second = ui.reply('download', {queued: true});
+assert.equal(second.body.season, '1'); assert.equal(second.body.episodes, '3', 'only selected actual episode numbers submitted');
 const request = ui.reply('download', {error: 'Connection uncertain. Check queue.'}, 502);
+assert.equal(request.body.season, '2'); assert.equal(request.body.episodes, '1-2', 'full selection uses exact range');
 assert.equal(request.headers['X-CSRF-Token'], 'csrf-token');
-choose.click(); assert(!ui.pending.some(xhr => xhr.action === 'download'), 'uncertain download is never retried');
-assert.equal(ui.document.activeElement, choose, 'pending and failed action retain remote focus');
-const follow = ui.el('download-results').querySelectorAll('button').find(button => button.textContent === 'Follow series');
-const seriesName = ui.el('download-results').querySelectorAll('input').find(input => input.value === 'I Simpson');
-seriesName.value = 'The Simpsons'; follow.focus(); follow.click(); follow.click();
-assert.equal(ui.pending.filter(xhr => xhr.action === 'follow').length, 1, 'follow cannot duplicate');
-const followRequest = ui.reply('follow', {ok: true});
-assert(ui.el('download-message').textContent.includes('will start downloading automatically'), 'following explains automatic catch-up');
-assert.equal(followRequest.headers['X-CSRF-Token'], 'csrf-token');
-assert.equal(followRequest.body.series, 'The Simpsons', 'chosen library name links watch history');
-assert.equal(followRequest.body.payload.id, 'simpson', 'provider identity is preserved');
-assert.equal(ui.document.activeElement, follow, 'following retains remote focus');
+submit.click(); assert(!ui.pending.some(xhr => xhr.action === 'download'), 'uncertain download is never retried');
+assert.equal(ui.document.activeElement, submit, 'failed action retains remote focus');
+assert(ui.el('download-message').textContent.includes('2 of 3 selections accepted'), 'partial submission explains accepted work');
+assert(ui.el('download-results').children.length, 'uncertain submission preserves results');
+const success = screen(); success.downloads();
+success.form.onsubmit({preventDefault() {}});
+success.reply('search', {results: [{title: 'Show', site: 'example', payload: {name: 'Show'}}]});
+success.el('download-results').querySelector('button').click();
+success.reply('episodes', {episodes: [{season: 1, episode: 1}, {season: 1, episode: 2}]});
+success.el('download-results').querySelectorAll('button').find(button => button.textContent === 'Download').click();
+success.reply('download', {queued: true});
+assert.equal(success.el('download-results').children.length, 0, 'accepted series clears search results');
+assert.equal(success.document.activeElement, success.search, 'clearing results restores search focus');
+assert(!success.pending.some(xhr => xhr.action === 'follow'), 'manual selection never enables autodownload');
 const errors = screen(); errors.downloads();
 errors.reply('sites', {groups: []});
 errors.reply('status', {slots: {active: 0, max: 4}, queued: 0});
 const failedQueue = {active: [], scheduled: [], history: [
-  {id: 'failed-1', title: 'Show', season: 1, episode: 2, status: 'failed', progress: 100, error: 'Merge failed <script>bad</script>'},
+  {id: 'failed-1', title: 'Show', season: 1, episode: 2, status: 'failed', progress: 100, speed: '29.55M/s', error: 'Merge failed <script>bad</script>'},
   {id: 'failed-2', title: 'Show', season: 2, episode: 1, status: 'failed'},
   {title: 'Completed title', status: 'completed'}, {title: 'Cancelled title', status: 'cancelled'}
 ]};
 errors.reply('queue', failedQueue);
 const failedText = errors.el('download-queue').textContent;
 assert(failedText.includes('Recent failures'));
+assert(!failedText.includes('100.0%') && !failedText.includes('29.55M/s'), 'failed downloads do not retain transfer progress or speed');
 assert(failedText.includes('Season 1 · Episode 2') && failedText.includes('Season 2 · Episode 1'));
 assert(failedText.includes('Merge failed <script>bad</script>'), 'error is rendered as text');
 assert(failedText.includes('Download failed; the engine supplied no details.'));
@@ -283,3 +341,75 @@ assert(!watch.hasAttribute('aria-disabled'), 'timeouts release the action for an
 assert.match(watchStatus.textContent, /Could not save/);
 assert(!episode.open && season.open && show.open);
 console.log('Library passed: nested season Back, collapsed episode watch action, focus preservation, state toggle, CSRF, duplicate and failure handling');
+
+const live = screen();
+live.location.href = '/admin';
+function catalogFixture(parent, ids) {
+  const root = live.add(parent, 'section', {id: 'catalog-live', 'data-catalog-url': '/api/catalog/ids', 'data-catalog-ids': JSON.stringify(ids)});
+  live.add(root, 'p', {id: 'library-watch-status'});
+  const series = live.add(root, 'details', {'data-catalog-key': 'series:Show'});
+  live.add(series, 'summary');
+  const season = live.add(series, 'details', {'data-catalog-key': 'season:Show:1'});
+  const summary = live.add(season, 'summary');
+  ids.forEach(id => {
+    const item = live.add(season, 'details', {'data-catalog-key': 'media:' + id});
+    const caption = live.add(item, 'summary');
+    live.add(caption, 'button', {'data-watch-url': '/watch/' + id, 'data-watched': '0', 'data-episode-name': 'Show E' + id});
+    const state = live.add(caption, 'span', {'data-watch-state': '', 'data-availability': 'Ready'});
+    state.textContent = 'Ready';
+    live.add(item, 'input');
+  });
+  return {root, series, season, summary};
+}
+const before = catalogFixture(live.body, [1]);
+const after = catalogFixture(live.document.createElement('div'), [1, 2]);
+before.series.open = before.season.open = true;
+before.summary.focus();
+live.libraryScript(); live.catalogScript(after.root);
+const tickCatalog = live.intervals[0];
+tickCatalog(); tickCatalog();
+assert.equal(live.pending.length, 1, 'catalog checks do not overlap');
+live.reply('ids', {ids: [1]});
+assert.equal(live.pending.length, 0, 'unchanged catalog never reloads the page');
+tickCatalog(); live.reply('ids', {ids: [1, 2]});
+live.reply('admin', '<new catalog>');
+assert.equal(before.root.querySelectorAll('[data-watch-url]').length, 2, 'newly imported episode appears without navigation');
+assert(before.root.querySelectorAll('details').slice(0, 2).every(detail => detail.open), 'expanded series and season remain open');
+assert.equal(live.document.activeElement, before.root.querySelectorAll('summary')[1], 'remote focus stays on the same season');
+assert(before.root.querySelectorAll('[data-watch-url]').every(button => typeof button.onclick === 'function'), 'new episode watch controls are bound');
+tickCatalog(); live.reply('ids', {ids: [2, 1]});
+assert.equal(live.pending.length, 0, 'catalog order does not trigger another refresh');
+const newestWatch = before.root.querySelectorAll('[data-watch-url]')[1];
+newestWatch.click(); live.reply('2', {watched: true});
+assert(live.el('library-watch-status').textContent.includes('marked as watched'), 'new watch action updates the live status element');
+live.current.focus();
+tickCatalog(); live.reply('ids', {ids: [1, 2, 3]}); live.reply('admin', '<new catalog>');
+assert.equal(live.document.activeElement, live.current, 'focus outside the catalog is preserved');
+tickCatalog(); live.reply('ids', {ids: [1, 2, 3]}); live.reply('admin', null, 502);
+assert.equal(live.document.activeElement, live.current, 'failed refresh retains the current page');
+live.document.hidden = true; tickCatalog(); assert.equal(live.pending.length, 0, 'hidden pages do not poll');
+live.document.hidden = false;
+tickCatalog(); live.reply('ids', {ids: [1, 2, 3]});
+before.root.handlers.input();
+live.reply('admin', '<new catalog>');
+assert.equal(before.root.querySelectorAll('[data-watch-url]').length, 2, 'in-flight refresh never discards edits');
+tickCatalog(); assert.equal(live.pending.length, 0, 'dirty forms defer further updates');
+console.log('Catalog updates passed: new imports, unchanged lists, focus, expanded seasons, new controls, hidden pages, and unsaved edits');
+
+const episodeUpdates = screen(); episodeUpdates.location.href = '/series/3';
+function shelfFixture(parent, ids) {
+  const root = episodeUpdates.add(parent, 'div', {id: 'catalog-live', 'data-catalog-url': '/api/catalog/ids?series_id=3', 'data-catalog-ids': JSON.stringify(ids)});
+  const rail = episodeUpdates.add(root, 'div', {'data-rail': '', 'aria-label': 'Season 1'});
+  ids.forEach(id => episodeUpdates.add(rail, 'a', {'data-card': '', 'data-media-id': String(id)}));
+  return {root, rail};
+}
+const originalShelf = shelfFixture(episodeUpdates.body, [3]);
+const focusedEpisode = originalShelf.rail.querySelector('a'); focusedEpisode.focus();
+originalShelf.rail.scrollLeft = 275;
+const updatedShelf = shelfFixture(episodeUpdates.document.createElement('div'), [2, 3]);
+episodeUpdates.catalogScript(updatedShelf.root);
+episodeUpdates.intervals[0]();
+episodeUpdates.reply('ids?series_id=3', {ids: [2, 3]}); episodeUpdates.reply('3', '<series catalog>');
+assert.equal(episodeUpdates.document.activeElement.getAttribute('data-media-id'), '3', 'series refresh preserves episode identity when positions change');
+assert.equal(originalShelf.root.querySelector('[data-rail]').scrollLeft, 275, 'series shelf retains horizontal scroll');
+console.log('Series updates passed: new episode cards, identity-based remote focus, and shelf scroll');

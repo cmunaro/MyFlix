@@ -27,7 +27,14 @@ class Provider:
         if self.fail == action:
             raise VibraVidError("Provider unavailable; check queue")
         if action == "episodes":
-            return {"episodes": copy.deepcopy(self.episodes)}
+            episodes = copy.deepcopy(self.episodes)
+            if episodes:
+                self.last_season = max(item["season"] for item in episodes)
+            if body.get("latest_only"):
+                latest = getattr(self, "last_season", None)
+                return {"episodes": [item for item in episodes if item["season"] == latest],
+                        "checked_seasons": [latest] if latest is not None else []}
+            return {"episodes": episodes}
         if action == "queue":
             return copy.deepcopy(self.queue)
         return {"queued": True, "download_id": f"job-{len(self.calls)}"}
@@ -214,7 +221,8 @@ class MonitoringTest(unittest.TestCase):
         self.provider.episodes += [{"season": 1, "episode": 2}, {"season": 2, "episode": 1}]
         self.check_now()
         self.assertEqual([(r["season"], r["episode"], r["state"]) for r in self.discoveries()],
-                         [(1, 1, "new"), (1, 2, "new"), (1, 3, "new"), (2, 1, "new")])
+                         [(1, 1, "new"), (1, 3, "new"), (2, 1, "new")])
+        self.assertTrue(all(row["listed"] for row in self.discoveries()), "older seasons retain their listings")
         initialize(self.database)
         page = self.client.get("/admin?section=following").data
         self.assertIn(b"New episodes", page)
@@ -222,6 +230,24 @@ class MonitoringTest(unittest.TestCase):
         with connect(self.database) as db:
             sub = db.execute("SELECT * FROM subscriptions").fetchone()
             self.assertGreaterEqual(sub["next_check"], sub["checked_at"] + INTERVAL)
+
+    def test_recurring_checks_refresh_only_latest_season_and_preserve_older_states(self):
+        self.provider.episodes = [{"season": 1, "episode": 1}, {"season": 2, "episode": 1}]
+        self.follow()
+        self.assertFalse([body for action, body in self.provider.calls if action == "episodes"][0]["latest_only"])
+        self.post("/admin/following/1/1/1", {"action": "dismiss"})
+        self.provider.episodes += [{"season": 1, "episode": 2}, {"season": 2, "episode": 2}]
+        self.check_now()
+        self.assertTrue([body for action, body in self.provider.calls if action == "episodes"][-1]["latest_only"])
+        self.assertEqual([(r["season"], r["episode"], r["state"], r["listed"]) for r in self.discoveries()],
+                         [(1, 1, "dismissed", 1), (2, 1, "new", 1), (2, 2, "new", 1)])
+        self.provider.episodes = [{"season": 2, "episode": 2}]
+        self.check_now()
+        self.assertEqual([(r["season"], r["episode"], r["listed"]) for r in self.discoveries()],
+                         [(1, 1, 1), (2, 1, 0), (2, 2, 1)])
+        self.provider.episodes += [{"season": 3, "episode": 1}]
+        self.check_now()
+        self.assertEqual((self.discoveries()[-1]["season"], self.discoveries()[-1]["episode"]), (3, 1))
 
     def test_metadata_errors_do_not_erase_or_create_discoveries(self):
         self.follow()
@@ -868,10 +894,64 @@ class MonitoringTest(unittest.TestCase):
         scan(self.database)
         self.provider.queue["history"].append({"id": "unknown", "site": "other", "title": "Unknown film", "status": "failed"})
         response = self.retry_all()
-        self.assertEqual(response.json, {"queued": 1, "skipped": 4})
+        self.assertEqual(response.json, {"queued": 1, "skipped": 3})
         self.post("/admin/season", {"series": "Show", "season": "1", "action": "exclude"})
         self.monitor.tick()
         self.assertFalse(any(a == "retry_download" for a, _ in self.provider.calls), "changed season rules win before submission")
+
+    def test_available_downloads_resolve_old_failures_without_retrying(self):
+        self.failed_downloads(2)
+        self.monitor.reconcile_queue(self.provider.queue)
+        video = self.video("Show.S01E01.mp4")
+        scan(self.database)
+        self.monitor.reconcile_queue(self.provider.queue)
+        presented = self.monitor.retries.present(copy.deepcopy(self.provider.queue))
+        self.assertEqual([job["episode"] for job in presented["history"]], [2])
+        with patch.object(self.app.extensions["vibravid"], "call", return_value=copy.deepcopy(self.provider.queue)):
+            self.assertEqual([job["episode"] for job in self.client.get("/admin/vibravid/queue").json["history"]], [2])
+        with connect(self.database) as db:
+            self.assertEqual(db.execute("SELECT state FROM download_request_state WHERE download_id=?",
+                (self.provider.queue["history"][0]["id"],)).fetchone()[0], "completed")
+        video.unlink()
+        scan(self.database)
+        self.assertEqual([job["episode"] for job in self.monitor.retries.present(copy.deepcopy(self.provider.queue))["history"]], [2],
+                         "removing a resolved video must not resurrect its old failure")
+
+    def test_failure_resolution_requires_exact_identity_and_an_existing_confined_file(self):
+        self.video("Show.S01E01.mp4")
+        scan(self.database)
+        exact = {"id": "legacy", "site": "example", "title": "Show", "season": 1, "episode": 1, "status": "failed"}
+        def visible(item):
+            return self.monitor.retries.present({"history": [item]})["history"]
+        self.assertEqual(visible(exact), [])
+        self.assertTrue(visible({**exact, "episode": 2}))
+        self.assertTrue(visible({**exact, "title": "Other"}))
+        self.assertTrue(visible({**exact, "episode": None, "episodes": "1-3"}))
+        (self.library / "Show.S01E01.mp4").unlink()
+        self.assertTrue(visible(exact), "stale catalog availability must not hide failures")
+        outside = self.base / "outside.mp4"
+        outside.write_bytes(b"outside")
+        (self.library / "Show.S01E01.mp4").symlink_to(outside)
+        self.assertTrue(visible(exact), "files outside the configured root must not resolve failures")
+
+    def test_failure_resolution_matches_film_requests_and_followed_aliases(self):
+        self.follow(series="Library Show")
+        self.video("Library Show.S01E01.mp4")
+        film = self.video("Film (2025) [1080p].mp4")
+        scan(self.database)
+        body = {"site": "example", "payload": {"name": "Film", "year": 2025, "is_movie": True}}
+        with connect(self.database) as db:
+            import json
+            db.execute("INSERT INTO download_requests VALUES(?,?,?)", (str(self.library), "film", json.dumps(body)))
+        queue = {"history": [{"id": "episode", "site": "example", "title": "Show", "season": 1, "episode": 1, "status": "failed"},
+                             {"id": "film", "title": "Film", "status": "failed"}]}
+        self.assertEqual(self.monitor.retries.present(copy.deepcopy(queue))["history"], [])
+        film.unlink()
+        self.assertEqual([job["id"] for job in self.monitor.retries.present(copy.deepcopy(queue))["history"]], ["film"])
+        other = self.base / "other"
+        other.mkdir()
+        self.post("/admin/settings", {"videos_path": str(other)})
+        self.assertEqual(len(self.monitor.retries.present(copy.deepcopy(queue))["history"]), 2)
 
     def test_retry_all_respects_root_and_requires_csrf(self):
         self.post("/admin/settings", {"videos_path": str(self.library)})
@@ -943,9 +1023,9 @@ class MonitoringTest(unittest.TestCase):
         self.video("Film.mp4")
         scan(self.database)
         page = self.client.get("/admin?section=library").data.decode()
-        self.assertEqual(page.count('<details class="catalog-series">'), 1)
+        self.assertEqual(page.count('<details class="catalog-series"'), 1)
         self.assertEqual(page.count('<section class="catalog-season">'), 2)
-        self.assertEqual(page.count('<details class="catalog-item">'), 4)
+        self.assertEqual(page.count('<details class="catalog-item"'), 4)
         self.assertIn('Mark season watched &amp; exclude downloads', page)
         self.assertIn('name="confirm" value="remove" required', page)
 

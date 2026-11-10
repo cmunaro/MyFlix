@@ -1,5 +1,5 @@
 {% from 'catalog_controls.html' import season_controls with context %}
-<p class="panel-note">Following automatically downloads missing unwatched episodes from existing and future seasons. New follows start checking within about 30 seconds; provider checks repeat every four hours. Watched episodes and excluded seasons never download automatically. Manual downloads can include watched episodes.</p>
+<p class="panel-note">Following automatically downloads missing unwatched episodes from existing and future seasons. New follows start checking within about 30 seconds; the first lookup loads all seasons, then checks repeat every four hours for the latest season only, detecting new seasons as they appear. Watched episodes and excluded seasons never download automatically. Manual downloads can include watched episodes.</p>
 {% for subscription in subscriptions %}
 <section class="admin-panel" data-lookup-id="{{ subscription.id }}">
   <div class="panel-heading"><h2>{{ subscription.series }}</h2><span class="section-tag">{{ subscription.site }}</span></div>
@@ -35,5 +35,5 @@
   {% endfor %}
 </section>
 {% else %}
-<section class="admin-panel admin-empty"><h2>No followed series</h2><p>Find a series in Downloads and select Follow series. Use its library series name to link existing watch history.</p><a class="button primary" href="{{ url_for('admin',section='downloads') }}">Find a series</a></section>
+<section class="admin-panel admin-empty"><h2>No followed series</h2><p>Download selected seasons and episodes from Downloads. This page manages existing automatic download subscriptions.</p><a class="button primary" href="{{ url_for('admin',section='downloads') }}">Find a series</a></section>
 {% endfor %}

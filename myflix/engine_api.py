@@ -77,8 +77,8 @@ def report_metadata(database, token, done, total, episodes, season=0):
             (done, total, episodes, season, token))
 
 
-def observe_metadata(api, report):
-    """Observe the pinned providers' scraper calls, without changing their results."""
+def observe_metadata(api, report, *, latest_only=False):
+    """Observe provider progress and optionally restrict iteration to its latest season."""
     # get_api returns a fresh instance. Keep instrumented scrapers private to this
     # request so simultaneous downloads never inherit progress callbacks.
     api._scraper_cache = {}
@@ -97,6 +97,12 @@ def observe_metadata(api, report):
 
         def seasons():
             result = count_seasons()
+            if latest_only and scraper.seasons_manager.seasons:
+                available = scraper.seasons_manager.seasons
+                if any(type(season.number) is not int or not 0 <= season.number <= 999 for season in available):
+                    raise ValueError("Provider season numbering is unsupported")
+                latest = max(season.number for season in available)
+                available[:] = [season for season in available if season.number == latest]
             report(0, total(), 0, 0)
             return result
 
@@ -139,15 +145,26 @@ def install():
             from VibraVid.core.utils.audio_selection import audio_language_context, filter_series_audio
             language = payload.get("_audio_language")
             token = body.get("lookup_token")
+            latest_only = body.get("latest_only", False)
+            if type(latest_only) is not bool:
+                raise ValueError("Invalid episode lookup scope")
+            report = lambda *progress: None
             if token is not None:
                 if not isinstance(token, str) or len(token) != 32 or any(c not in "0123456789abcdef" for c in token):
                     raise ValueError("Invalid lookup token")
-                observe_metadata(api, lambda *progress: report_metadata(os.environ["MYFLIX_DATABASE"], token, *progress))
-            else:
-                api._scraper_cache = {}
+                report = lambda *progress: report_metadata(os.environ["MYFLIX_DATABASE"], token, *progress)
+            observe_metadata(api, report, latest_only=latest_only)
+            scope = {}
             with audio_language_context(language):
-                seasons = filter_series_audio(api.get_series_metadata(media) or [], language)
-            return JsonResponse({"episodes": [
+                seasons = api.get_series_metadata(media) or []
+                if latest_only:
+                    # Single-season providers expose their episode list directly,
+                    # without the common scraper hooks used by multi-season sites.
+                    latest = max((season.number for season in seasons), default=None)
+                    seasons = [season for season in seasons if season.number == latest]
+                    scope["checked_seasons"] = [latest] if latest is not None else []
+                seasons = filter_series_audio(seasons, language)
+            return JsonResponse({**scope, "episodes": [
                 {"season": s.number, "episode": e.number, "title": e.name or ""}
                 for s in seasons for e in s.episodes]})
         except Exception:

@@ -53,6 +53,35 @@ class MyFlixTest(unittest.TestCase):
         with connect(self.database) as db:
             return dict(db.execute("SELECT * FROM media ORDER BY id LIMIT 1").fetchone())
 
+    def test_catalog_updates_track_imported_episodes_and_confine_the_current_root(self):
+        self.configure()
+        self.video("Show.S01E01.Start.mp4")
+        scan(self.database)
+        media_id = self.item()["id"]
+        url = f"/api/catalog/ids?series_id={media_id}"
+        self.assertEqual(self.client.get(url).json, {"ids": [media_id]})
+        for route in ("/admin?section=library", f"/series/{media_id}"):
+            page = self.client.get(route).data
+            self.assertIn(b'id="catalog-live"', page)
+            self.assertIn(b'catalog.js', page)
+        self.video("Show.S01E02.Next.mp4")
+        self.video("Other.S01E01.Start.mp4")
+        scan(self.database)
+        response = self.client.get(url)
+        self.assertEqual(len(response.json["ids"]), 2)
+        self.assertEqual(response.headers["Cache-Control"], "no-store")
+        self.assertEqual(len(self.client.get("/api/catalog/ids").json["ids"]), 3)
+        for invalid in ("bad", "9" * 40, "9223372036854775808"):
+            self.assertEqual(self.client.get("/api/catalog/ids?series_id=" + invalid).status_code, 400)
+        with connect(self.database) as db:
+            db.execute("UPDATE media SET hidden=1 WHERE episode=2")
+        self.assertEqual(self.client.get(url).json, {"ids": [media_id]})
+        other = self.base / "other"
+        other.mkdir()
+        self.post("/admin/settings", {"videos_path": str(other)})
+        self.assertEqual(self.client.get("/api/catalog/ids").json, {"ids": []})
+        self.assertEqual(self.client.get(url).status_code, 404)
+
     def test_media_advertises_ranges_and_serves_later_bytes(self):
         self.configure()
         self.video()
@@ -102,10 +131,10 @@ class MyFlixTest(unittest.TestCase):
         media_id = self.item()["id"]
         url = f"/admin/media/{media_id}/watched"
         page = self.client.get("/admin?section=library").data.decode()
-        self.assertEqual(page.count('<details class="catalog-season">'), 2)
+        self.assertEqual(page.count('<details class="catalog-season"'), 2)
         self.assertIn('<span>Season 1</span><span>2 episodes</span>', page)
         self.assertIn('<span>Season 2</span><span>1 episode</span>', page)
-        summaries = re.findall(r'<details class="catalog-item">\s*<summary>(.*?)</summary>', page, re.S)
+        summaries = re.findall(r'<details class="catalog-item"[^>]*>\s*<summary>(.*?)</summary>', page, re.S)
         self.assertEqual(len(summaries), 3)
         for summary in summaries:
             self.assertLess(summary.index('data-watch-url='), summary.index('data-watch-state'))

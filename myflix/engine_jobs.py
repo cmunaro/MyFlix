@@ -139,6 +139,9 @@ def install_publication(tracker, database, stages):
                 stages.finish(work, stop.is_set, lambda: tracker.update_status(download_id, "Waiting for processing"))
             except (Cancelled, InterruptedError):
                 success, error = False, "cancelled"
+            except FileExistsError:
+                logging.exception("Library file already exists; staging file retained")
+                success, error = False, "A file already exists in the library for this download. Nothing was overwritten; the staging file was retained. Check the library before downloading again."
             except Exception:
                 logging.exception("Completed download could not be published; staging file retained")
                 success, error = False, "Library publication failed. Check the service logs; the staging file was retained."

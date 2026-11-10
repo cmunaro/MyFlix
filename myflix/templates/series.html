@@ -2,10 +2,13 @@
 {% from 'cards.html' import shelf %}
 {% from 'title_details.html' import facts %}
 {% block title %}{{ featured.series }} · MyFlix{% endblock %}
+{% block scripts %}<script src="{{ url_for('static',filename='catalog.js') }}" defer></script>{% endblock %}
 {% block content %}
+<div id="catalog-live" data-catalog-url="{{ url_for('catalog_ids',series_id=featured.id) }}" data-catalog-ids='{{ catalog_ids|tojson }}'>
 <section class="hero series-hero title-detail tone-{{ featured.id % 5 }}">
   {% if featured.backdrop or featured.poster %}<img class="hero-image" src="{{ featured.backdrop or featured.poster }}" alt="">{% endif %}
   <div class="hero-shade"></div><div class="hero-content"><p class="original"><b>M</b> SERIES</p><h1>{{ featured.series }}</h1><p class="hero-kicker">{{ seasons|length }} {{ 'season' if seasons|length == 1 else 'seasons' }} in your library</p>{% if featured.metadata.synopsis %}<p class="hero-description">{{ featured.metadata.synopsis }}</p>{% endif %}{{ facts(featured) }}<div class="hero-actions" data-focus-row><a class="button play" data-initial-focus href="{{ url_for('watch',media_id=featured.id) }}">▶ &nbsp;{{ 'Resume' if featured.position > 0 and not featured.watched else 'Play' }} S{{ featured.season }}:E{{ featured.episode }}</a><a class="button secondary" href="/">← Back</a></div></div>
 </section>
 <div class="tv-shelves">{% for season,episodes in seasons.items() %}{% if episodes[0].season_description %}<p class="season-description">Season {{ season }} · {{ episodes[0].season_description }}</p>{% endif %}{{ shelf('Season ' ~ season,episodes,true) }}{% endfor %}</div>
+</div>
 {% endblock %}

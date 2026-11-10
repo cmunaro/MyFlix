@@ -43,10 +43,21 @@
     document.addEventListener('click', enterFromInteraction, true);
   }
   function array(nodes) { return Array.prototype.slice.call(nodes); }
+  var shelfResizeBound = false;
   function desktopShelfArrows() {
     // A mouse connected to a TV must never enable the desktop controls.
     if (isTV || !window.matchMedia || !window.matchMedia('(hover: hover) and (pointer: fine)').matches) { return; }
+    if (!shelfResizeBound) {
+      shelfResizeBound = true;
+      window.addEventListener('resize', function () {
+        array(document.querySelectorAll('[data-rail]')).forEach(function (rail) {
+          if (rail.myflixShelfResize) { rail.myflixShelfResize(); }
+        });
+      });
+    }
     array(document.querySelectorAll('[data-rail]')).forEach(function (rail) {
+      if (rail.getAttribute('data-arrows-ready')) { return; }
+      rail.setAttribute('data-arrows-ready', '1');
       var shelf = rail.parentNode;
       var requested = null;
       function button(direction, label, glyph) {
@@ -95,7 +106,7 @@
       rail.addEventListener('wheel', cancelRequested);
       rail.addEventListener('touchstart', cancelRequested);
       rail.addEventListener('keydown', cancelRequested);
-      window.addEventListener('resize', function () { requested = null; update(); });
+      rail.myflixShelfResize = function () { requested = null; update(); };
       update();
     });
   }
@@ -235,5 +246,6 @@
     focus(target);
     if (homeAction && target === homeAction) { window.scrollTo(0, 0); }
   }
+  window.MyFlixTV.refreshShelves = desktopShelfArrows;
   desktopShelfArrows();
 }());

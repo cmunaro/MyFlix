@@ -2,9 +2,17 @@
 (function () {
   var status = document.getElementById('library-watch-status');
   if (!status) { return; }
-  var buttons = document.querySelectorAll('[data-watch-url]');
-  for (var i = 0; i < buttons.length; i += 1) { bind(buttons[i]); }
+  function refresh() {
+    status = document.getElementById('library-watch-status');
+    var buttons = document.querySelectorAll('[data-watch-url]');
+    for (var i = 0; i < buttons.length; i += 1) {
+      if (!buttons[i].getAttribute('data-watch-bound')) { bind(buttons[i]); }
+    }
+  }
+  window.MyFlixLibrary = {refresh: refresh};
+  refresh();
   function bind(button) {
+    button.setAttribute('data-watch-bound', '1');
     var busy = false;
     button.onclick = function (event) {
       if (event) { event.preventDefault(); event.stopPropagation(); }

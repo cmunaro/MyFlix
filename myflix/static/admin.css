@@ -106,3 +106,12 @@
 .catalog-item summary .catalog-watch{flex:none;margin-right:18px;padding:10px 14px;font-size:16px}
 .catalog-watch[aria-disabled="true"]{opacity:.6}
 @media(max-width:650px){.catalog-item summary{flex-wrap:wrap}.catalog-item .catalog-title{flex-basis:100%;margin-bottom:14px}.catalog-item summary .catalog-watch{font-size:14px;margin-right:10px}}
+
+.episode-picker{margin-top:18px}
+.episode-season{border-top:1px solid #424650;padding:12px 0}
+.episode-season-heading{display:flex;align-items:center;justify-content:space-between;gap:16px}
+.download-options .episode-season-heading button{width:60px;flex-shrink:0;padding:8px}
+.download-options .episode-picker label{display:flex;align-items:center;gap:14px;margin:0;padding:12px 6px;cursor:pointer}
+.tv-admin .episode-picker input[type=checkbox]{width:26px;height:26px;min-height:26px;flex-shrink:0;margin:0;padding:0}
+.episode-list{padding-left:28px}
+.episode-picker [hidden]{display:none!important}
