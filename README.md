@@ -21,6 +21,8 @@ MyFlix turns a folder of films and series into a TV-friendly library with cover 
 
 [VibraVid](https://github.com/AstraeLabs/VibraVid) is bundled as the download engine. MyFlix installs a pinned revision, starts and stops it, and publishes completed downloads into your selected library. You do not need to configure a separate engine website, port, or shared secret.
 
+The current pin is VibraVid **1.5.0**, including upstream Referer-header fixes for StreamingCommunity/VixCloud requests. Provider HTTP 403 responses can still depend on upstream availability and access requirements.
+
 ## Manage your collection
 
 ![MyFlix management screen showing provider search, library and following navigation, and download progress](res/manage_download.png)

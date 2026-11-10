@@ -118,6 +118,42 @@ class IntegrationTest(unittest.TestCase):
             VibraVid(self.address, "").call("sites")
 
 
+class ProviderHeadersTest(unittest.TestCase):
+    def test_streamingcommunity_requests_keep_navigation_referers(self):
+        runtime = tempfile.TemporaryDirectory()
+        self.addCleanup(runtime.cleanup)
+        with patch.dict("os.environ", {"VIBRAVID_BASE_PATH": runtime.name}):
+            from VibraVid.player import vixcloud
+
+        source = vixcloud.VideoSource("https://provider.example/it", is_series=True, media_id=42)
+        iframe = MagicMock(url="https://provider.example/it/iframe/42",
+                           text='<iframe src="https://video.example/embed/42"></iframe>')
+        video = MagicMock(text="video page")
+        expected = ["https://provider.example/it/watch/42?e=77", iframe.url]
+        responses = iter([iframe, video])
+
+        def client(headers):
+            result = MagicMock()
+            result.__enter__.return_value = result
+            result.headers = dict(headers)
+            return result
+
+        def get(client, url, **kwargs):
+            # Model a provider rejecting requests without the navigation context.
+            if client.headers.get("Referer") != expected.pop(0):
+                raise PermissionError("HTTP 403: missing navigation Referer")
+            return next(responses)
+
+        with patch.object(vixcloud, "create_client", side_effect=client), \
+                patch.object(vixcloud, "get_with_retry", side_effect=get), \
+                patch.object(source, "parse_script") as parse:
+            source.get_iframe(77)
+            source.get_content()
+        self.assertEqual(expected, [])
+        self.assertEqual(source.headers["Referer"], "https://video.example/embed/42")
+        parse.assert_called_once_with(script_text="video page")
+
+
 class MetadataTimeoutTest(unittest.TestCase):
     def test_slow_all_season_lookup_has_time_to_complete(self):
         response = MagicMock()
