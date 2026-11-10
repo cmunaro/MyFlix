@@ -2,8 +2,12 @@
 (function () {
   var status = document.getElementById('library-watch-status');
   if (!status) { return; }
+  var cleanup = document.getElementById('cleanup-dialog');
+  var cleanupToken = null, cleanupPending = false, cleanupGeneration = 0;
   function refresh() {
     status = document.getElementById('library-watch-status');
+    var opener = document.getElementById('cleanup-open');
+    if (opener && cleanup) { opener.onclick = openCleanup; }
     var buttons = document.querySelectorAll('[data-watch-url]');
     for (var i = 0; i < buttons.length; i += 1) {
       if (!buttons[i].getAttribute('data-watch-bound')) { bind(buttons[i]); }
@@ -21,8 +25,113 @@
       if (!downloads[j].getAttribute('data-download-bound')) { bindDownload(downloads[j]); }
     }
   }
-  window.MyFlixLibrary = {refresh: refresh};
+  window.MyFlixLibrary = {refresh: refresh, cleanupOpen: function () { return Boolean(cleanup && !cleanup.hidden); }, handleKey: cleanupKey};
+  if (cleanup) {
+    document.getElementById('cleanup-cancel').onclick = closeCleanup;
+    document.getElementById('cleanup-confirm').onclick = confirmCleanup;
+    document.getElementById('cleanup-episodes').onchange = updateCleanup;
+    document.getElementById('cleanup-movies').onchange = updateCleanup;
+    document.addEventListener('focusin', function (event) {
+      if (!cleanup.hidden && !cleanup.contains(event.target)) { document.getElementById('cleanup-cancel').focus(); }
+    });
+  }
   refresh();
+  function cleanupMessage(message) { document.getElementById('cleanup-status').textContent = message; }
+  function updateCleanup() {
+    document.getElementById('cleanup-confirm').disabled = cleanupPending || !cleanupToken ||
+      !(document.getElementById('cleanup-episodes').checked || document.getElementById('cleanup-movies').checked);
+  }
+  function closeCleanup() {
+    if (cleanupPending) { return; }
+    cleanupGeneration += 1;
+    cleanup.hidden = true;
+    document.getElementById('cleanup-open').focus();
+  }
+  function openCleanup() {
+    var generation = ++cleanupGeneration;
+    cleanupToken = null;
+    cleanup.hidden = false;
+    var kinds = ['episodes', 'movies'];
+    for (var i = 0; i < kinds.length; i += 1) {
+      var input = document.getElementById('cleanup-' + kinds[i]);
+      input.checked = false; input.disabled = true;
+      document.getElementById('cleanup-' + kinds[i] + '-label').textContent = 'Delete all watched ' + kinds[i];
+    }
+    updateCleanup();
+    cleanupMessage('Calculating space to free…');
+    document.getElementById('cleanup-cancel').focus();
+    var request = new XMLHttpRequest();
+    request.open('GET', document.getElementById('cleanup-open').getAttribute('data-cleanup-url'), true);
+    request.timeout = 15000;
+    request.onerror = request.ontimeout = function () {
+      if (generation === cleanupGeneration) { cleanupMessage('Could not calculate cleanup space. Close and reopen Clean up to try again.'); }
+    };
+    request.onload = function () {
+      if (generation !== cleanupGeneration) { return; }
+      var data;
+      try { data = JSON.parse(request.responseText); } catch (error) { request.onerror(); return; }
+      if (request.status !== 200 || !data || !data.token || !data.episodes || !data.movies) { request.onerror(); return; }
+      cleanupToken = data.token;
+      for (var j = 0; j < kinds.length; j += 1) {
+        var kind = kinds[j], group = data[kind];
+        document.getElementById('cleanup-' + kind).disabled = !group.count;
+        document.getElementById('cleanup-' + kind + '-label').textContent = 'Delete all watched ' + kind +
+          (group.count ? ' — free ' + group.size : ' — nothing to free');
+      }
+      cleanupMessage('Choose which watched videos to delete.');
+      updateCleanup();
+    };
+    request.send(null);
+  }
+  function confirmCleanup() {
+    if (cleanupPending || !cleanupToken || document.getElementById('cleanup-confirm').disabled) { return; }
+    var categories = [];
+    if (document.getElementById('cleanup-episodes').checked) { categories.push('episodes'); }
+    if (document.getElementById('cleanup-movies').checked) { categories.push('movies'); }
+    cleanupPending = true;
+    document.getElementById('cleanup-cancel').disabled = true;
+    updateCleanup();
+    cleanupMessage('Deleting selected watched videos…');
+    var request = new XMLHttpRequest();
+    request.open('POST', document.getElementById('cleanup-open').getAttribute('data-cleanup-url'), true);
+    request.setRequestHeader('X-CSRF-Token', document.querySelector('meta[name="csrf-token"]').content);
+    request.setRequestHeader('Content-Type', 'application/json');
+    request.timeout = 15000;
+    function failed(message) {
+      cleanupPending = false; cleanupToken = null;
+      document.getElementById('cleanup-cancel').disabled = false;
+      updateCleanup();
+      cleanupMessage(message || 'Removal could not be confirmed. Reload Library to check remaining files.');
+      document.getElementById('cleanup-cancel').focus();
+    }
+    request.onerror = request.ontimeout = function () { failed(); };
+    request.onload = function () {
+      var data;
+      try { data = JSON.parse(request.responseText); } catch (error) { failed(); return; }
+      if (request.status !== 200 || !data || typeof data.removed !== 'number') { failed(data && data.error); return; }
+      window.location.reload();
+    };
+    request.send(JSON.stringify({categories: categories, token: cleanupToken, confirm: true}));
+  }
+  function cleanupKey(event) {
+    if (!cleanup || cleanup.hidden) { return false; }
+    var code = event.keyCode;
+    if (code === 461 || code === 10009 || code === 8 || code === 27) { closeCleanup(); }
+    else if (code === 13 || code === 32) {
+      var active = document.activeElement;
+      if (active && cleanup.contains(active) && !active.disabled) { active.click(); }
+    } else if (code === 9 || (code >= 37 && code <= 40)) {
+      var nodes = cleanup.querySelectorAll('input,button'), controls = [];
+      for (var i = 0; i < nodes.length; i += 1) { if (!nodes[i].disabled) { controls.push(nodes[i]); } }
+      if (controls.length) {
+        var index = controls.indexOf(document.activeElement);
+        var step = code === 37 || code === 38 || (code === 9 && event.shiftKey) ? -1 : 1;
+        controls[(index + step + controls.length) % controls.length].focus();
+      }
+    } else { return true; }
+    event.preventDefault();
+    return true;
+  }
   function bindRemove(button) {
     button.setAttribute('data-remove-bound', '1');
     var sent = false;

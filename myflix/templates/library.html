@@ -1,6 +1,6 @@
 {% from 'catalog_controls.html' import season_controls,media_editor with context %}
 <section class="admin-panel" aria-labelledby="catalog-heading"{% if section == 'library' %} id="catalog-live" data-catalog-url="{{ url_for('catalog_ids') }}" data-catalog-ids='{{ catalog_ids|tojson }}' data-catalog-revision="{{ catalog_revision }}"{% endif %}>
-  <div class="panel-heading"><h2 id="catalog-heading">Your collection</h2><span class="library-storage">{% if storage %}Total space: {{ storage.total|storage_size }} · Free {{ storage.free|storage_size }} ({{ storage.percent }}%){% else %}Storage unavailable{% endif %}</span><span class="section-tag">{{ items|selectattr('available')|list|length }} DOWNLOADED</span></div>
+  <div class="panel-heading"><h2 id="catalog-heading">Your collection</h2><span class="library-storage">{% if storage %}Total space: {{ storage.total|storage_size }} · Free {{ storage.free|storage_size }} ({{ storage.percent }}%){% else %}Storage unavailable{% endif %}</span><button type="button" class="secondary" id="cleanup-open" data-cleanup-url="{{ url_for('cleanup_preview') }}">Clean up</button><span class="section-tag">{{ items|selectattr('available')|list|length }} DOWNLOADED</span></div>
   <form class="catalog-search" method="get"><input type="hidden" name="section" value="{{ section }}"><label for="catalog-query">Find in your library<input id="catalog-query" name="q" value="{{ query }}" placeholder="Film, series or episode title" maxlength="200"></label><button class="secondary">Find</button>{% if query %}<a class="button secondary" href="{{ url_for('admin',section=section) }}">Clear</a>{% endif %}</form>
   <p class="panel-note">Open a series to see downloaded and missing episodes. Watch history and automatic download controls are independent.</p>
   <p id="library-watch-status" class="panel-note" role="status" aria-live="polite"></p>
@@ -17,3 +17,14 @@
   {% for item in items if not item.series %}{{ media_editor(item) }}{% endfor %}
   {% if not items %}<div class="admin-empty"><h3>{{ 'No matching titles' if query else 'Your collection starts here' }}</h3><p>Find a film or series in Downloads, or choose your videos folder in Settings.</p><a class="button primary" href="{{ url_for('admin',section='downloads') }}">Find a title</a></div>{% endif %}
 </section>
+
+<div id="cleanup-dialog" class="cleanup-overlay" role="dialog" aria-modal="true" aria-labelledby="cleanup-heading" hidden>
+  <div class="cleanup-popup">
+    <h2 id="cleanup-heading">Clean up watched videos</h2>
+    <p>Delete video files from the whole library. Details and watch history will be kept.</p>
+    <p id="cleanup-status" role="status" aria-live="polite"></p>
+    <label class="checkbox"><input id="cleanup-episodes" type="checkbox" disabled> <span id="cleanup-episodes-label">Delete all watched episodes</span></label>
+    <label class="checkbox"><input id="cleanup-movies" type="checkbox" disabled> <span id="cleanup-movies-label">Delete all watched movies</span></label>
+    <div class="cleanup-actions"><button id="cleanup-cancel" type="button" class="secondary">Cancel</button><button id="cleanup-confirm" type="button" class="primary" disabled>Confirm</button></div>
+  </div>
+</div>

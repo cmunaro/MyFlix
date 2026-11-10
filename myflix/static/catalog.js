@@ -9,7 +9,7 @@
   var known = signature(JSON.parse(root.getAttribute('data-catalog-ids')));
   var knownRevision = root.getAttribute('data-catalog-revision');
   function editing() {
-    return dirty || (root.contains(document.activeElement) && /INPUT|SELECT|TEXTAREA/.test(document.activeElement.tagName)
+    return (window.MyFlixLibrary && window.MyFlixLibrary.cleanupOpen && window.MyFlixLibrary.cleanupOpen()) || dirty || (root.contains(document.activeElement) && /INPUT|SELECT|TEXTAREA/.test(document.activeElement.tagName)
         && !document.activeElement.hasAttribute('data-new-episodes-url')) ||
       Boolean(root.querySelector('[data-action-pending]'));
   }

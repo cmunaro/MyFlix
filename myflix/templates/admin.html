@@ -1,8 +1,8 @@
 {% extends 'base.html' %}
 {% block title %}{{ {'downloads':'Downloads','library':'Library','settings':'Settings'}[section] }} · MyFlix{% endblock %}
-{% block styles %}<link rel="stylesheet" href="{{ url_for('static',filename='admin.css',v='library-storage-1') }}">{% endblock %}
+{% block styles %}<link rel="stylesheet" href="{{ url_for('static',filename='admin.css',v='library-cleanup-1') }}">{% endblock %}
 {% block body_class %}tv-admin{% endblock %}
-{% block scripts %}{% if section == 'library' %}<script src="{{ url_for('static',filename='catalog.js') }}" defer></script>{% endif %}{% if section == 'library' %}<script src="{{ url_for('static',filename='library.js',v='library-storage-1') }}" defer></script>{% endif %}{% if section == 'downloads' %}<script src="{{ url_for('static',filename='downloads.js') }}" defer></script>{% endif %}{% endblock %}
+{% block scripts %}{% if section == 'library' %}<script src="{{ url_for('static',filename='catalog.js') }}" defer></script>{% endif %}{% if section == 'library' %}<script src="{{ url_for('static',filename='library.js',v='library-cleanup-1') }}" defer></script>{% endif %}{% if section == 'downloads' %}<script src="{{ url_for('static',filename='downloads.js') }}" defer></script>{% endif %}{% endblock %}
 {% block header %}
 <aside class="admin-sidebar">
   <a class="admin-wordmark" href="/" aria-label="MyFlix home">MYFLIX</a>

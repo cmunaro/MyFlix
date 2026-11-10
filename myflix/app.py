@@ -10,9 +10,10 @@ from datetime import datetime, timezone
 
 from flask import Flask, abort, jsonify, redirect, render_template, request, send_file, session, url_for
 from werkzeug.exceptions import HTTPException
+from itsdangerous import BadSignature, URLSafeTimedSerializer
 
 from .artwork import ArtworkCache
-from .catalog import library_revision, media_path, remove_files, scan_safely
+from .catalog import library_revision, media_path, remove_files, scan_safely, watched_cleanup
 from .db import connect, initialize, settings
 from .credits import CreditsCache
 from .discovery import DiscoveryCache
@@ -585,6 +586,42 @@ def create_app(config=None):
         if failed:
             raise ValueError("Could not remove video safely. Catalog and history preserved.")
         return redirect(url_for("admin", section="library", notice="Video removed. Details and watch history retained."))
+
+    @app.get("/admin/cleanup")
+    def cleanup_preview():
+        with scan_lock, connect(database) as db:
+            db.execute("BEGIN")
+            root = settings(db)["videos_path"]
+            groups, fingerprint = watched_cleanup(db, root)
+        token = URLSafeTimedSerializer(app.secret_key, salt="watched-cleanup").dumps([root, fingerprint])
+        return jsonify(token=token, **{kind: {"count": len(items),
+            "size": storage_size(sum(item["size"] for item in items))} for kind, items in groups.items()})
+
+    @app.post("/admin/cleanup")
+    def cleanup_watched():
+        body = request.get_json(silent=True) or {}
+        if not isinstance(body, dict):
+            raise ValueError("Choose watched episodes or movies to delete")
+        selected = body.get("categories")
+        if (body.get("confirm") is not True or not isinstance(selected, list) or not selected
+                or any(kind not in ("episodes", "movies") for kind in selected)
+                or len(set(selected)) != len(selected) or not isinstance(body.get("token"), str)):
+            raise ValueError("Choose watched episodes or movies and confirm deletion")
+        try:
+            preview = URLSafeTimedSerializer(app.secret_key, salt="watched-cleanup").loads(body["token"], max_age=600)
+        except BadSignature:
+            abort(409, "Cleanup preview expired. Close and reopen Clean up to review current sizes.")
+        with scan_lock, connect(database) as db:
+            db.execute("BEGIN IMMEDIATE")
+            root = settings(db)["videos_path"]
+            groups, fingerprint = watched_cleanup(db, root)
+            if preview != [root, fingerprint]:
+                abort(409, "Library changed. Close and reopen Clean up to review current sizes.")
+            items = [item for kind in selected for item in groups[kind]]
+            failed = remove_files(db, items)
+        if failed:
+            raise ValueError(f"{failed} video(s) could not be removed safely. Reload Library to check remaining files. Details and history retained.")
+        return jsonify(removed=len(items))
 
     @app.post("/admin/season/remove")
     def remove_season():

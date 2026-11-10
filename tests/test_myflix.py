@@ -122,6 +122,88 @@ class MyFlixTest(unittest.TestCase):
         with connect(self.database) as db:
             self.assertEqual([tuple(row) for row in db.execute("SELECT episode,available FROM media ORDER BY episode")], [(1, 0), (2, 1)])
 
+    def cleanup_library(self):
+        self.configure()
+        self.video("Show.S01E01.Watched.mp4", b"e" * 1000)
+        self.video("Show.S01E02.Unwatched.mp4", b"u" * 2000)
+        self.video("Watched film.mp4", b"m" * 3000)
+        self.video("Unwatched film.mp4", b"u" * 4000)
+        scan(self.database)
+        with connect(self.database) as db:
+            db.execute("INSERT INTO progress(media_id,watched) SELECT id,1 FROM media WHERE path IN (?,?)",
+                       ("Show.S01E01.Watched.mp4", "Watched film.mp4"))
+            db.execute("UPDATE media SET hidden=1 WHERE path='Watched film.mp4'")
+
+    def test_cleanup_preview_totals_and_selected_categories_preserve_history(self):
+        self.cleanup_library()
+        preview = self.client.get("/admin/cleanup").json
+        self.assertEqual(preview["episodes"], {"count": 1, "size": "1.0 KB"})
+        self.assertEqual(preview["movies"], {"count": 1, "size": "3.0 KB"})
+        page = self.client.get("/admin?section=library&q=Unwatched").data.decode()
+        self.assertIn('id="cleanup-open"', page)
+        self.assertIn('aria-modal="true"', page)
+        self.assertIn('>Cancel</button>', page)
+        self.assertIn('>Confirm</button>', page)
+        result = self.post("/admin/cleanup", body={"token": preview["token"], "categories": ["episodes"], "confirm": True})
+        self.assertEqual(result.json, {"removed": 1})
+        self.assertFalse((self.library / "Show.S01E01.Watched.mp4").exists())
+        self.assertTrue((self.library / "Watched film.mp4").exists())
+        preview = self.client.get("/admin/cleanup").json
+        self.assertEqual(preview["episodes"]["count"], 0)
+        self.assertEqual(self.post("/admin/cleanup", body={"token": preview["token"], "categories": ["movies"], "confirm": True}).json,
+                         {"removed": 1})
+        self.assertTrue((self.library / "Show.S01E02.Unwatched.mp4").exists())
+        self.assertTrue((self.library / "Unwatched film.mp4").exists())
+        with connect(self.database) as db:
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM media").fetchone()[0], 4)
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM progress WHERE watched=1").fetchone()[0], 2)
+
+    def test_cleanup_rejects_invalid_requests_and_stale_preview(self):
+        self.cleanup_library()
+        preview = self.client.get("/admin/cleanup").json
+        body = {"token": preview["token"], "categories": ["episodes", "movies"], "confirm": True}
+        self.assertEqual(self.client.post("/admin/cleanup", json=body).status_code, 403)
+        for update in ({"categories": []}, {"categories": ["all"]}, {"categories": ["movies", "movies"]},
+                       {"confirm": False}, {"token": None}):
+            self.assertEqual(self.post("/admin/cleanup", body={**body, **update}).status_code, 400)
+        self.assertEqual(self.post("/admin/cleanup", body={**body, "token": "forged"}).status_code, 409)
+        with patch("itsdangerous.timed.TimestampSigner.get_timestamp", return_value=time.time() + 601):
+            self.assertEqual(self.post("/admin/cleanup", body=body).status_code, 409)
+        with connect(self.database) as db:
+            db.execute("UPDATE progress SET watched=0")
+        self.assertEqual(self.post("/admin/cleanup", body=body).status_code, 409)
+        self.assertEqual(len(list(self.library.glob("*.mp4"))), 4)
+
+    def test_cleanup_rejects_replaced_files_and_root_changes(self):
+        self.cleanup_library()
+        preview = self.client.get("/admin/cleanup").json
+        body = {"token": preview["token"], "categories": ["episodes", "movies"], "confirm": True}
+        film = self.library / "Watched film.mp4"
+        film.write_bytes(b"replacement")
+        self.assertEqual(self.post("/admin/cleanup", body=body).status_code, 409)
+        preview = self.client.get("/admin/cleanup").json
+        body["token"] = preview["token"]
+        other = self.base / "other-library"
+        other.mkdir()
+        self.post("/admin/settings", {"videos_path": str(other)})
+        self.assertEqual(self.post("/admin/cleanup", body=body).status_code, 409)
+        self.assertEqual(film.read_bytes(), b"replacement")
+
+    def test_cleanup_excludes_escaped_files_and_reports_partial_failures(self):
+        self.cleanup_library()
+        episode = self.library / "Show.S01E01.Watched.mp4"
+        episode.unlink()
+        outside = self.base / "outside.mp4"
+        outside.write_bytes(b"private")
+        episode.symlink_to(outside)
+        preview = self.client.get("/admin/cleanup").json
+        self.assertEqual(preview["episodes"]["count"], 0)
+        with patch("pathlib.Path.unlink", side_effect=PermissionError):
+            result = self.post("/admin/cleanup", body={"token": preview["token"], "categories": ["movies"], "confirm": True})
+        self.assertEqual(result.status_code, 400)
+        self.assertEqual(outside.read_bytes(), b"private")
+        self.assertTrue((self.library / "Watched film.mp4").exists())
+
     def test_catalog_updates_track_imported_episodes_and_confine_the_current_root(self):
         self.configure()
         self.video("Show.S01E01.Start.mp4")

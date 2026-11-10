@@ -55,6 +55,27 @@ def remove_files(db, items):
     return failed
 
 
+def watched_cleanup(db, root):
+    """Snapshot only watched, available, confined videos for cleanup confirmation."""
+    groups = {"episodes": [], "movies": []}
+    fingerprints = []
+    for row in db.execute("""SELECT m.* FROM media m JOIN progress p ON p.media_id=m.id
+            WHERE m.root=? AND m.available=1 AND p.watched=1 ORDER BY m.id""", (root,)):
+        try:
+            path = media_path(root, row["path"])
+            if path != Path(root).resolve(strict=True) / row["path"]:
+                continue
+            stat = path.stat()
+        except (OSError, ValueError):
+            continue
+        item = dict(row)
+        item["size"] = stat.st_size
+        groups["episodes" if item["series"] else "movies"].append(item)
+        fingerprints.append((item["id"], item["path"], item["series"], stat.st_dev,
+                             stat.st_ino, stat.st_size, stat.st_mtime_ns))
+    return groups, hashlib.sha256(repr(fingerprints).encode()).hexdigest()
+
+
 def source_identity(path):
     title, series, season, episode = identify(Path(path))
     return json.dumps([series, season, episode] if series else [title])
