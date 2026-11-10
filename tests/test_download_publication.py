@@ -43,7 +43,7 @@ class Tracker:
 class DownloadPublicationTest(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
-        self.base = Path(self.temp.name)
+        self.base = Path(self.temp.name).resolve()
         self.database = str(self.base / 'myflix.sqlite3')
         self.app = create_app({'TESTING': True, 'DATABASE': self.database})
         self.downloads = self.base / 'vibravid' / 'downloads'

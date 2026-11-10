@@ -18,7 +18,7 @@ from myflix.db import connect, settings
 class MyFlixTest(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
-        self.base = Path(self.temp.name)
+        self.base = Path(self.temp.name).resolve()
         self.library = self.base / "library"
         self.library.mkdir()
         self.database = str(self.base / "myflix.sqlite3")
@@ -509,7 +509,7 @@ class MyFlixTest(unittest.TestCase):
             publish(source, downloads, self.library)
         self.assertFalse((outside / "Season 1").exists())
 
-    @unittest.skipUnless(sys.platform == "linux", "Linux no-replace rename")
+    @unittest.skipUnless(sys.platform in ("linux", "darwin"), "Native no-replace rename")
     def test_completion_hook_without_hard_links_never_overwrites(self):
         downloads = self.base / "downloads"
         downloads.mkdir()
@@ -529,7 +529,7 @@ class MyFlixTest(unittest.TestCase):
                 self.assertEqual(list(self.library.glob(".myflix-*")), [])
                 target.unlink()
 
-    @unittest.skipUnless(sys.platform == "linux", "Linux no-replace rename")
+    @unittest.skipUnless(sys.platform in ("linux", "darwin"), "Native no-replace rename")
     def test_completion_hook_rename_race_preserves_existing_video(self):
         from deploy.vibravid_publish import _rename_no_replace
         downloads = self.base / "downloads"

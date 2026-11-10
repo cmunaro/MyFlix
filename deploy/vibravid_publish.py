@@ -12,15 +12,23 @@ from pathlib import Path
 
 
 def _rename_no_replace(source, target):
-    """Publish on Linux filesystems such as exFAT without replacing any entry."""
+    """Publish atomically without replacing any entry on Linux or macOS."""
     libc = ctypes.CDLL(None, use_errno=True)
     rename = getattr(libc, "renameat2", None)
-    if rename is None:
-        raise OSError(errno.ENOSYS, "Atomic no-replace rename is unavailable", str(target))
-    rename.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
-    rename.restype = ctypes.c_int
-    # AT_FDCWD, RENAME_NOREPLACE. Never fall back to an overwriting rename.
-    if rename(-100, os.fsencode(source), -100, os.fsencode(target), 1):
+    if rename is not None:
+        rename.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
+        rename.restype = ctypes.c_int
+        # AT_FDCWD, RENAME_NOREPLACE. Never fall back to an overwriting rename.
+        result = rename(-100, os.fsencode(source), -100, os.fsencode(target), 1)
+    else:
+        rename = getattr(libc, "renamex_np", None)
+        if rename is None:
+            raise OSError(errno.ENOSYS, "Atomic no-replace rename is unavailable", str(target))
+        rename.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint]
+        rename.restype = ctypes.c_int
+        # macOS RENAME_EXCL has the same atomic no-overwrite guarantee.
+        result = rename(os.fsencode(source), os.fsencode(target), 4)
+    if result:
         code = ctypes.get_errno()
         raise OSError(code, os.strerror(code), str(target))
 

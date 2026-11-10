@@ -25,6 +25,43 @@ class ManagedEngineTest(unittest.TestCase):
     def tearDown(self):
         self.temp.cleanup()
 
+    def test_vixcloud_embed_receives_current_provider_referrer(self):
+        state, _ = prepare(self.database)
+        script = '''
+from unittest.mock import MagicMock, patch
+from VibraVid.player import vixcloud
+from myflix.engine import install_player_headers
+
+install_player_headers()
+for series in (True, False):
+    source = vixcloud.VideoSource("https://provider.example/it", series, 1304)
+    source.iframe_src = "https://player.example/embed/123"
+    original_headers = dict(source.headers)
+    for language in ("it", "en"):
+        source.url = "https://provider.example/" + language
+        def client_for_embed(*, headers):
+            assert headers == dict(original_headers, Referer=source.url + "/"), headers
+            client = MagicMock()
+            response = client.__enter__.return_value.get.return_value
+            response.status_code = 200
+            response.text = "window.masterPlaylist = {token: 'token', expires: '123', url: 'https://media.example/master.m3u8'};"
+            return client
+        with patch.object(vixcloud, "create_client", side_effect=client_for_embed):
+            source.get_content()
+            assert source.get_playlist().startswith("https://media.example/master.m3u8?"), source.get_playlist()
+
+    failure = RuntimeError("HTTP Error 403")
+    with patch.object(vixcloud, "create_client", side_effect=failure):
+        try:
+            source.get_content()
+        except RuntimeError as error:
+            assert error is failure
+        else:
+            raise AssertionError("Provider errors must still propagate")
+'''
+        subprocess.run([sys.executable, "-c", script], check=True,
+                       env=dict(os.environ, VIBRAVID_BASE_PATH=str(state)), cwd=Path(__file__).resolve().parent.parent)
+
     def test_secret_default_library_and_managed_configuration_persist(self):
         secret = self.app.config["VIBRAVID_SECRET"]
         self.assertTrue(len(secret) >= 64)

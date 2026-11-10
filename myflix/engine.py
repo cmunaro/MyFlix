@@ -17,6 +17,21 @@ from .engine_jobs import install_stages, install_tools, read_limits
 ROOT = Path(__file__).resolve().parent.parent
 
 
+def install_player_headers():
+    """Retain the provider referrer when opening its VixCloud player."""
+    from VibraVid.player.vixcloud import VideoSource
+
+    original = VideoSource.get_content
+
+    def get_content(source):
+        # The embed endpoint rejects requests without the referring provider.
+        # Read the current URL: a series source is reused across catalogs.
+        source.headers["Referer"] = source.url.rstrip("/") + "/"
+        return original(source)
+
+    VideoSource.get_content = get_content
+
+
 def prepare(database):
     import tomlkit
 
@@ -158,6 +173,7 @@ def serve_engine(runtime, ready_fd):
 
     download_limit, processing_limit = read_limits(os.environ["MYFLIX_DATABASE"])
     install_tools(runtime.parent, processing_limit)
+    install_player_headers()
     application = get_wsgi_application()
     install_stages(download_limit, processing_limit, database=os.environ["MYFLIX_DATABASE"])
     from .engine_api import install
