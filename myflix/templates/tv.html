@@ -14,6 +14,16 @@
   <header class="tv-header">
     <a class="wordmark" href="/" aria-label="MyFlix home">MYFLIX</a>
     <a class="search-toggle" href="/?search=1" aria-label="Search library">⌕</a>
+    {% if request.endpoint == 'home' %}
+    <button id="notification-toggle" class="notification-toggle" type="button" aria-label="Notifications" aria-expanded="false" aria-controls="notifications">
+      <svg viewBox="0 0 24 24" width="28" height="28" aria-hidden="true"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      <span id="notification-count" class="notification-count" hidden></span>
+    </button>
+    <section id="notifications" class="notifications" aria-label="Notifications" hidden>
+      <h2>Notifications</h2>
+      <div id="notification-list" class="notification-list" tabindex="0" aria-live="polite"><p>Loading notifications…</p></div>
+    </section>
+    {% endif %}
     <a class="profile" href="/admin" aria-label="Manage library">M</a>
   </header>
   {% endblock %}

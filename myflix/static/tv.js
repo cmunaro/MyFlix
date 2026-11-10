@@ -159,6 +159,7 @@
     } finally { pointerFocus = false; }
   });
   document.addEventListener('keydown', function (event) {
+    if (window.MyFlixNotifications && window.MyFlixNotifications.handleKey(event)) { return; }
     if (window.MyFlixLibrary && window.MyFlixLibrary.handleKey && window.MyFlixLibrary.handleKey(event)) { return; }
     var code = event.keyCode, active = document.activeElement;
     // The player owns its controls and remote keys, including fullscreen.

@@ -404,12 +404,12 @@ class MyFlixTest(unittest.TestCase):
             first = db.execute("SELECT id FROM media WHERE episode=1").fetchone()[0]
         self.post(f"/api/progress/{first}", body={"position": 30, "duration": 100})
         home = self.client.get("/").data.decode()
-        self.assertEqual(re.findall(r"<h2>(.*?)</h2>", home), ["Continue watching", "Not watched", "Series", "Film"])
+        self.assertEqual(re.findall(r'<section class="tv-shelf" data-shelf>\s*<h2>(.*?)</h2>', home), ["Continue watching", "Not watched", "Series", "Film"])
         self.assertNotIn('aria-label="Browse"', home)
         self.assertNotIn("Recently added", home)
         self.assertEqual(home.count(f'href="/series/{first}" data-card'), 1)
         search = self.client.get("/?q=Show").data.decode()
-        self.assertEqual(re.findall(r"<h2>(.*?)</h2>", search), ["Continue watching", "Series"])
+        self.assertEqual(re.findall(r'<section class="tv-shelf" data-shelf>\s*<h2>(.*?)</h2>', search), ["Continue watching", "Series"])
 
     def test_continuing_series_is_excluded_from_not_watched(self):
         self.configure()
@@ -453,7 +453,7 @@ class MyFlixTest(unittest.TestCase):
 
         for url in ("/", f"/series/{episode}"):
             home = self.client.get(url).data.decode()
-            shelves = re.findall(r'<h2>(.*?)</h2>(.*?)</section>', home, re.S)
+            shelves = re.findall(r'<section class="tv-shelf" data-shelf>\s*<h2>(.*?)</h2>(.*?)</section>', home, re.S)
             self.assertTrue(shelves)
             for label, shelf in shelves:
                 with self.subTest(url=url, shelf=label):

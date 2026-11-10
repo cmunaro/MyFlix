@@ -1,6 +1,6 @@
 {% extends 'tv.html' %}
 {% from 'cards.html' import shelf %}
-{% block scripts %}<script src="{{ url_for('static', filename='discovery.js') }}" defer></script>{% endblock %}
+{% block scripts %}<script src="{{ url_for('static', filename='discovery.js') }}" defer></script><script src="{{ url_for('static', filename='notifications.js') }}" defer></script>{% endblock %}
 {% block content %}
 <div id="preview-video">{% if preview_trailer %}<iframe id="preview-frame" loading="eager" tabindex="-1" aria-hidden="true" title="Trailer preview" allow="autoplay; encrypted-media" referrerpolicy="strict-origin-when-cross-origin" src="https://www.youtube-nocookie.com/embed/{{ preview_trailer }}?{{ {'enablejsapi': 1, 'autoplay': 0, 'controls': 0, 'disablekb': 1, 'playsinline': 1, 'rel': 0, 'origin': request.host_url.rstrip('/')}|urlencode }}"></iframe>{% endif %}</div>
 <div id="discovery-preview" class="discovery-preview" hidden aria-hidden="true">

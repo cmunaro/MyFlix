@@ -21,6 +21,7 @@ from .engine_jobs import validate_limits
 from .monitoring import SeriesMonitor, episode_status, follow, library_episodes, lookup_status
 from .matroska import HeaderOverlay, seekable_header
 from .metadata import MetadataCache
+from .notifications import download_notices
 from .vibravid import VibraVid, VibraVidError
 
 
@@ -146,6 +147,23 @@ def create_app(config=None):
         if not path:
             abort(404)
         return send_file(path, conditional=True, mimetype="image/png" if path.suffix == ".png" else "image/jpeg")
+
+    @app.get("/api/notifications")
+    def notifications():
+        with connect(database) as db:
+            root = settings(db)["videos_path"]
+            notices = download_notices(db, root)
+        for notice in notices:
+            notice["href"] = url_for("series" if notice.pop("series") else "title", media_id=notice.pop("media_id"))
+        try:
+            usage = shutil.disk_usage(root)
+            if usage.total and usage.free / usage.total <= 0.1:
+                notices.insert(0, {"id": "storage", "message": "Storage nearly full",
+                                   "detail": f"{storage_size(usage.free)} free · {usage.free / usage.total:.1%} remaining",
+                                   "href": url_for("admin", section="library")})
+        except OSError:
+            pass
+        return jsonify(notifications=notices)
 
     @app.get("/")
     def home():

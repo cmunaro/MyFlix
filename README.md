@@ -27,6 +27,15 @@ The current pin is VibraVid **1.5.0**, including upstream Referer-header fixes f
 
 ![MyFlix management screen showing provider search, library navigation, and download progress](res/manage_download.png)
 
+The home notification bell opens a scrollable list of the latest 50 download notices.
+Movie and episode notices appear after successful library publication; season notices
+require every episode in the saved provider list to be available and visible. Notices
+start after upgrading; ordinary scans do not create them. The list refreshes when opened,
+and its count refreshes every minute while closed. The count represents recent notices,
+not unread messages. A live storage warning appears when the library disk has 10% or less
+free space and disappears when space is recovered. Select a notice to open its title
+or manage storage; use Up/Down to browse and Back to close.
+
 The admin interface works with a desktop pointer or TV remote. Use **Downloads** to find titles and manage the queue, **Library** to edit your collection, and **Settings** to select storage and download limits. Library shows total and free space on the selected library drive, plus downloaded file sizes and series/season totals (decimal GB/MB). Use **Delete** on a downloaded title or **Remove all** within a season; confirm before files are deleted. Use **Clean up** in Library to delete all watched episodes, watched movies, or both. The popup previews the space each choice can free before confirmation, across the whole library even when search is active. Library retains episode details and watch history after video files are removed.
 
 ## Get started

@@ -7,6 +7,7 @@ import time
 from pathlib import Path
 
 from .db import connect, settings
+from .notifications import record_download
 
 EXTENSIONS = {".mp4", ".m4v", ".mkv", ".webm", ".mov"}
 EPISODE = re.compile(r"(?i)(?:s(\d{1,3})[ ._-]*e(\d{1,4})|(\d{1,3})x(\d{1,4}))")
@@ -216,6 +217,7 @@ def import_completed(database, path, library):
             raise ValueError("The downloaded title is hidden in the library")
         db.execute("INSERT OR REPLACE INTO published_media VALUES(?,?,?)",
                    (media["id"], stat.st_size, stat.st_mtime_ns))
+        record_download(db, media["id"])
         return media["id"]
 
 

@@ -39,6 +39,14 @@ def initialize(path):
                 media_id INTEGER PRIMARY KEY REFERENCES media(id) ON DELETE CASCADE,
                 size INTEGER NOT NULL, mtime_ns INTEGER NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS notifications (
+                id INTEGER PRIMARY KEY,
+                root TEXT NOT NULL, event_key TEXT NOT NULL,
+                media_id INTEGER NOT NULL REFERENCES media(id) ON DELETE CASCADE,
+                message TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(root,event_key)
+            );
             CREATE TABLE IF NOT EXISTS progress (
                 media_id INTEGER PRIMARY KEY REFERENCES media(id),
                 position REAL NOT NULL DEFAULT 0,
