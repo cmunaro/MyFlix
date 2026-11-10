@@ -13,7 +13,7 @@ MyFlix turns a folder of films and series into a TV-friendly library with cover 
 - **Made for the sofa.** Browse horizontal shelves with your remote, open seasons and episodes, and watch in an edge-to-edge player whose controls fade away.
 - **Pick up where you left off.** Resume across household devices, track watched episodes automatically, and move to the next episode without leaving fullscreen. The next-episode prompt focuses its button when it appears, so pressing OK starts the next episode immediately.
 - **Manage everything in one place.** Search providers, queue downloads, edit titles, organize series, and choose your library folder from the built-in admin interface.
-- **Keep up with series.** Follow a show to download missing unwatched episodes from existing and future seasons, or choose notification-only mode. Watched episodes and excluded seasons are skipped automatically.
+- **Keep up with series.** Download selected episodes now or choose **Only new episodes**. Both actions automatically get future episodes from the latest season, including new seasons. Watched episodes and excluded seasons are skipped automatically.
 - **Covers without API keys.** MyFlix uses local artwork first and caches provider covers in the background when available.
 - **Details from your download source.** Film and series pages show available synopses, genres, cast, year, and episode details, with runtime read from the local video.
 - **Discover what to watch next.** SIMKL shelves show weekly most-watched series and home-released films, plus upcoming series and seasons. Hover or focus artwork to preview a trailer with sound when the browser permits it.
@@ -25,9 +25,9 @@ The current pin is VibraVid **1.5.0**, including upstream Referer-header fixes f
 
 ## Manage your collection
 
-![MyFlix management screen showing provider search, library and following navigation, and download progress](res/manage_download.png)
+![MyFlix management screen showing provider search, library navigation, and download progress](res/manage_download.png)
 
-The admin interface works with a desktop pointer or TV remote. Use **Downloads** to find titles and manage the queue, **Library** to edit your collection, **Following** to monitor series, and **Settings** to select storage and download limits. **Watched and removed** keeps history accessible after video files are removed.
+The admin interface works with a desktop pointer or TV remote. Use **Downloads** to find titles and manage the queue, **Library** to edit your collection, and **Settings** to select storage and download limits. **Watched and removed** keeps history accessible after video files are removed.
 
 ## Get started
 
@@ -74,19 +74,17 @@ Correct unusual names and metadata in **Library**. Local JPEG artwork is support
 
 Catalog edits and watch progress survive rescans and missing files. An unavailable mount preserves the previous catalog and reports a scan error. Removing a video through admin deletes its library file but keeps its catalog details and watch history; sidecars and staging originals remain.
 
-### Follow a series
+### Download a series
 
-In **Downloads**, series results offer **Choose episodes**. Every season and episode starts selected. Use **All seasons** to select or clear the entire series; it shows a mixed state when only some episodes are selected. Use a season checkbox to select or clear its episodes, or expand the season to choose episodes individually. A partially selected season shows a mixed checkbox. Select **Download** to queue the selection; after all requests are acknowledged, search results clear. Selected episodes remain active downloads through publication and catalog import; an entry leaves the active queue only after it is ready to play in the library. Selection does not enable automatic downloads. If a submission fails, further submissions stop; inspect the queue before trying again.
+In **Downloads**, select **Choose episodes**. Missing episodes start checked. **All seasons** selects or clears every selectable episode; season checkboxes control their episodes, and arrows expand individual episode choices. Episodes already in the library or awaiting a download request stay checked and locked. A fully downloaded season cannot be toggled.
 
-Existing followed series remain manageable in **Following**. The first lookup loads all seasons. Every four hours afterward, MyFlix refreshes the season list and fetches episodes only for the latest season, including a newly added season. Earlier seasons keep their saved listings and history; recurring checks do not discover later additions to older seasons. **Save & check now** schedules an earlier check, normally within about 30 seconds. **Following** shows live lookup status: queued, fetching, complete, or failed. During fetching, the season count, current season, and episodes found update automatically every three seconds when the provider exposes season progress; otherwise an indeterminate progress bar remains visible. Loading all seasons of a long-running series can take several minutes; episode lookups allow up to five minutes before reporting a timeout. Errors stay visible with **Save & check now** available in Following.
+Choose **Download** to save the selected missing episodes in MyFlix's durable queue and enable automatic checks. Choose **Only new episodes** to skip all episodes currently listed and enable automatic checks without downloading them. Search results clear after the action is acknowledged. There is no separate Following page or monitoring mode to configure.
 
-Following can catch up on existing episodes as well as discover new ones. In **Following**, pause monitoring or choose notification-only mode. Use **mark a season watched & exclude downloads** to skip seasons you have already seen. Notifications stay inside MyFlix.
+MyFlix checks the season list every four hours while running and loads episodes only for the latest season. Newly listed episodes download automatically, including episodes in a newly added season. Old unselected episodes stay skipped, and later additions to older seasons are not discovered automatically. Watched episodes, excluded seasons, and episodes already in the library are skipped. Explicit selections can include watched or excluded episodes that are missing from disk. Existing saved series download sources are migrated to automatic future-episode checks without replaying their old backlog; files added manually without a known provider source need to be found once in Downloads.
 
-Single-episode download requests queue without repeating the all-season lookup; the download worker resolves the requested episode. Season and episode-range selections retain the engine's metadata expansion.
+Selected episodes stay in **Current downloads** while waiting for an engine slot, downloading, processing, publishing, and entering the catalog. They leave the active queue only after they are ready to play. Queued selections can be cancelled before the engine starts them. Provider-check errors and download failures appear in Downloads. If a request is unconfirmed, inspect the queue before trying again; uncertain engine submissions are never retried automatically.
 
-Failed downloads appear with season, episode, and error details in Downloads. Once the exact film or episode is confirmed present in the configured library, its old failure leaves the failed list. Catalog records alone do not resolve a failure if the file is missing or outside the library. Following retains confirmed episode failures and provides a **Retry failed episode** action. **Retry all failed downloads** moves eligible failures out of Recent failures into a persistent priority queue. Retries start ahead of ordinary queued downloads, while running jobs finish normally. A retry that fails again returns with its new error. After each server restart, MyFlix automatically queues confirmed eligible failures once, after the first successful library scan. Failures from that recovery remain visible until you retry them or restart again. If a download request times out, check the queue before retrying. MyFlix does not automatically retry uncertain download submissions. Provider availability, accounts, and any required optional modules depend on the upstream provider.
-
-Acknowledged film and single-episode downloads interrupted by a reboot or service restart are recovered automatically after the engine is ready and the library has been scanned. MyFlix records which engine accepted each request and queues missing eligible work with priority, keeping the simultaneous job limit. Existing files, queued jobs, completed or cancelled requests, watched/excluded episodes, and paused or notification-only follows are skipped. Episode ranges and requests with uncertain outcomes still require queue review before retrying.
+**Retry all failed downloads** moves eligible failures into a durable priority queue ahead of ordinary waiting jobs. Running jobs finish normally. A retry that fails again returns with its new error. Old failures disappear once the exact episode or film is verified in the configured library. After a restart, MyFlix recovers confirmed failures and acknowledged interrupted film or exact-episode downloads after a successful library scan and queue read. Existing files, watched/excluded episodes, completed or cancelled requests, unavailable episodes, and queued work are skipped. Legacy ranges and uncertain requests still require queue review.
 
 ## Use your TV remote
 
@@ -120,7 +118,7 @@ Audio and subtitle selection appears when the browser exposes suitable native tr
 
 Select a film to open its detail page, then choose **Play** or **Resume**. Series pages include available title information, season descriptions, and episode titles/descriptions. Continue watching and the featured Play action still open playback directly.
 
-A background worker retrieves metadata from the download provider and saves it in SQLite. Saved download requests and followed series identify the original source; for other library files, MyFlix accepts only a single provider search result matching the title, media type, and filename year when present. Ambiguous results remain without provider details. No external metadata service, account, or API key is added. StreamingCommunity title pages and providers exposing the bundled engine's common series scraper are supported; other providers contribute explicit metadata already present in their search payload. Availability/pricing notices are never used as synopses. Field coverage varies by provider, and unsupported fields are omitted.
+A background worker retrieves metadata from the download provider and saves it in SQLite. Saved download requests and managed series identify the original source; for other library files, MyFlix accepts only a single provider search result matching the title, media type, and filename year when present. Ambiguous results remain without provider details. No external metadata service, account, or API key is added. StreamingCommunity title pages and providers exposing the bundled engine's common series scraper are supported; other providers contribute explicit metadata already present in their search payload. Availability/pricing notices are never used as synopses. Field coverage varies by provider, and unsupported fields are omitted.
 
 Metadata refreshes every seven days, or when a new library season or saved source is found. Provider failures retain saved details and retry after an hour. FFprobe reads each local video's actual runtime at low priority with a 15-second timeout; unavailable tools or unreadable files leave runtime blank and retry after an hour. Changes to the file path, size, or modification time invalidate the cached runtime. Neither providers nor FFprobe are called while serving web pages. Refresh the page after background processing to see new details.
 
@@ -187,7 +185,7 @@ Job and processing limits are configurable in **Settings** and apply after resta
 
 Local runs store state under `./data` by default; set `MYFLIX_DATA` to use another location. `MYFLIX_HOST` and `MYFLIX_PORT` control the listening address and port, defaulting to `0.0.0.0:8090`.
 
-SQLite stores catalog edits, settings, follows, exclusions, and household watch history. Completed media is copied into the library folder chosen in admin as independent files, without hard links or symbolic links to staging. Successful downloads are published atomically; existing videos are never overwritten. Staging originals remain and can continue to occupy disk space.
+SQLite stores catalog edits, settings, series download sources, exclusions, and household watch history. Completed media is copied into the library folder chosen in admin as independent files, without hard links or symbolic links to staging. Successful downloads are published atomically; existing videos are never overwritten. Staging originals remain and can continue to occupy disk space.
 
 On Linux, library drives using exFAT are supported through an atomic no-replace rename after copying the completed file. Local macOS runs use the native exclusive rename for the same no-overwrite guarantee. The library drive must be mounted read/write. If it becomes read-only, check the filesystem and mount before retrying publication; completed downloads remain in staging.
 
@@ -212,7 +210,7 @@ For bug reports, include the server OS, TV model and firmware, steps to reproduc
 ## Further reading
 
 - [Setup and operating guide](docs/guide.md) — detailed behavior and configuration.
-- [Following series and watch history](docs/guide.md#following-series-and-keeping-history).
+- [Series downloads and watch history](docs/guide.md#series-downloads-and-watch-history).
 - [Artwork lookup and caching](docs/guide.md#automatic-covers).
 - [VibraVid integration, storage, and processing](docs/guide.md#vibravid-integration).
 - [VIDAA browser and codec limitations](docs/guide.md#tv-compatibility).

@@ -15,7 +15,7 @@ from .vibravid import VibraVidError
 INTERVAL = 4 * 3600
 
 
-def follow(database, site, payload, series):
+def _series_identity(site, payload, series):
     if (not isinstance(site, str) or not site or len(site) > 100
             or not isinstance(payload, dict) or payload.get("is_movie")
             or not isinstance(payload.get("name"), str) or not payload["name"].strip()
@@ -26,14 +26,18 @@ def follow(database, site, payload, series):
     provider_id = next((payload.get(k) for k in ("id", "url", "path_id", "slug") if payload.get(k) not in (None, "")), None)
     if provider_id is None or not isinstance(provider_id, (str, int)) or isinstance(provider_id, bool):
         raise ValueError("This provider result has no stable series identity")
-    identity = hashlib.sha256(json.dumps(provider_id).encode()).hexdigest()
+    return hashlib.sha256(json.dumps(provider_id).encode()).hexdigest()
+
+
+def follow(database, site, payload, series):
+    identity = _series_identity(site, payload, series)
     with connect(database) as db:
         db.execute("BEGIN IMMEDIATE")
         root = settings(db)["videos_path"]
         old = db.execute("SELECT id FROM subscriptions WHERE root=? AND (series=? OR (site=? AND identity=?))",
                          (root, series.strip(), site, identity)).fetchone()
         if old:
-            raise ValueError("This series is already followed. Manage it in Following.")
+            raise ValueError("This series already has a download source. Manage it in Downloads.")
         db.execute("""INSERT INTO subscriptions(root,series,site,identity,payload,mode)
             VALUES(?,?,?,?,?,'auto')""", (root, series.strip(), site, identity, json.dumps(payload)))
 
@@ -98,7 +102,7 @@ def lookup_status(subscription, config):
         if state == "error":
             message = f"Episode lookup failed after {done} of {total} seasons · {episodes} episodes found." if total else "Episode lookup failed."
         else:
-            message = "Following needs attention."
+            message = "Automatic episode checks need attention."
         state = "error"
     elif item["next_check"] <= time.time():
         state, message = "queued", "Episode lookup queued — waiting for the background checker…"
@@ -123,8 +127,133 @@ class SeriesMonitor:
         self.lock = threading.Lock()
         self.download_lock = threading.RLock()
         self.retries = DownloadRetries(database)
+        self.restored_roots = {}
 
-    def check(self, subscription):
+    def _ensure_series(self, site, payload, *, mode='setup', expected_root=None):
+        series = payload.get("name") if isinstance(payload, dict) else None
+        identity = _series_identity(site, payload, series)
+        with connect(self.database) as db:
+            db.execute("BEGIN IMMEDIATE")
+            root = settings(db)["videos_path"]
+            if expected_root is not None and root != expected_root:
+                raise ValueError("The library changed while restoring download sources")
+            old = db.execute("""SELECT * FROM subscriptions WHERE root=? AND (series=? OR (site=? AND identity=?))
+                ORDER BY (site=? AND identity=?) DESC LIMIT 1""",
+                (root, series.strip(), site, identity, site, identity)).fetchone()
+            if old:
+                if old["site"] != site or old["identity"] != identity:
+                    if old["mode"] != 'setup':
+                        raise ValueError("This series already uses another download source")
+                    # Merely inspecting a result must not claim its download source.
+                    db.execute("DELETE FROM discoveries WHERE subscription_id=?", (old["id"],))
+                    db.execute("""UPDATE subscriptions SET site=?,identity=?,payload=?,mode=?,initialized=0,
+                        lookup_state='',lookup_token='',error='' WHERE id=?""", (site, identity, json.dumps(payload), mode, old["id"]))
+                    return dict(db.execute("SELECT * FROM subscriptions WHERE id=?", (old["id"],)).fetchone())
+                if old["mode"] == 'setup' and mode == 'baseline':
+                    db.execute("UPDATE subscriptions SET mode='baseline',next_check=0 WHERE id=?", (old["id"],))
+                    return dict(db.execute("SELECT * FROM subscriptions WHERE id=?", (old["id"],)).fetchone())
+                return dict(old)
+            identity_id = db.execute("""INSERT INTO subscriptions(root,series,site,identity,payload,mode)
+                VALUES(?,?,?,?,?,?)""", (root, series.strip(), site, identity, json.dumps(payload), mode)).lastrowid
+            return dict(db.execute("SELECT * FROM subscriptions WHERE id=?", (identity_id,)).fetchone())
+
+    def inspect(self, site, payload):
+        subscription = self._ensure_series(site, payload)
+        self.check(subscription, baseline=True, full=True)
+        with connect(self.database) as db:
+            if settings(db)["videos_path"] != subscription["root"]:
+                raise ValueError("The library changed. Search for the series again")
+            current = db.execute("SELECT * FROM subscriptions WHERE id=?", (subscription["id"],)).fetchone()
+            if current["site"] != subscription["site"] or current["identity"] != subscription["identity"]:
+                raise ValueError("This search result changed. Load its episodes again")
+            episodes = []
+            for row in db.execute("SELECT * FROM discoveries WHERE subscription_id=? AND listed=1 ORDER BY season,episode",
+                                  (subscription["id"],)):
+                item = dict(row)
+                available = episode_status(db, subscription, item["season"], item["episode"])["available"]
+                locked = available or item["state"] in ('manual_pending','submitting','submitted','uncertain','retry_pending')
+                episodes.append({"season": item["season"], "episode": item["episode"], "title": item["title"],
+                                 "available": available, "locked": locked})
+        return {"series_id": subscription["id"], "source": subscription["site"] + ':' + subscription["identity"], "episodes": episodes}
+
+    def start(self, series_id, selection, only_new, source):
+        if type(series_id) is not int or not 1 <= series_id <= 2**63 - 1 or type(only_new) is not bool:
+            raise ValueError("Choose a series and a download action")
+        if not isinstance(selection, list) or len(selection) > 20000 or (only_new and selection):
+            raise ValueError("Choose valid episodes")
+        selected = set()
+        for item in selection:
+            if (not isinstance(item, dict) or type(item.get("season")) is not int or type(item.get("episode")) is not int
+                    or not 0 <= item["season"] <= 999 or not 1 <= item["episode"] <= 9999):
+                raise ValueError("Choose valid episodes")
+            selected.add((item["season"], item["episode"]))
+        if not only_new and not selected:
+            raise ValueError("Select at least one episode")
+        with self.download_lock, connect(self.database) as db:
+            db.execute("BEGIN IMMEDIATE")
+            subscription = db.execute("SELECT * FROM subscriptions WHERE id=? AND root=?",
+                (series_id, settings(db)["videos_path"])).fetchone()
+            if not subscription or not subscription["initialized"] or subscription["lookup_state"] != 'complete':
+                raise ValueError("Load the episode list before choosing downloads")
+            if source != subscription["site"] + ':' + subscription["identity"]:
+                raise ValueError("This search result changed. Load its episodes again")
+            listed = {(row["season"], row["episode"]): row for row in db.execute(
+                "SELECT * FROM discoveries WHERE subscription_id=? AND listed=1", (series_id,))}
+            if any(identity not in listed for identity in selected):
+                raise ValueError("An episode is no longer available. Reload the episode list")
+            # Existing provider listings form the baseline. Unselected episodes
+            # must not become automatic catch-up work on the next check.
+            db.execute("UPDATE discoveries SET state='dismissed' WHERE subscription_id=? AND state='new'", (series_id,))
+            queued = 0
+            for season, episode in selected:
+                item = listed[season, episode]
+                if episode_status(db, subscription, season, episode)["available"] or item["state"] in (
+                        'manual_pending','submitting','submitted','uncertain','retry_pending'):
+                    continue
+                db.execute("UPDATE discoveries SET state='manual_pending',error='' WHERE subscription_id=? AND season=? AND episode=?",
+                           (series_id, season, episode))
+                queued += 1
+            db.execute("UPDATE subscriptions SET mode='auto',next_check=?,error='' WHERE id=?",
+                       (int(time.time()) + INTERVAL, series_id))
+        return {"queued": True, "selected": queued, "only_new": only_new}
+
+    def cancel_selection(self, identity):
+        match = re.fullmatch(r"selection:([0-9]{1,19}):([0-9]{1,3}):([0-9]{1,4})", identity)
+        if not match or int(match[1]) > 2**63 - 1:
+            raise ValueError("Select a queued episode")
+        series_id, season, episode = map(int, match.groups())
+        with self.download_lock, connect(self.database) as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute("""SELECT d.state FROM discoveries d JOIN subscriptions s ON s.id=d.subscription_id
+                WHERE s.root=? AND s.id=? AND d.season=? AND d.episode=?""",
+                (settings(db)["videos_path"], series_id, season, episode)).fetchone()
+            if not row or row["state"] not in ('manual_pending','dismissed'):
+                raise ValueError("This episode may have started. Refresh the queue before cancelling it")
+            db.execute("UPDATE discoveries SET state='dismissed' WHERE subscription_id=? AND season=? AND episode=?",
+                       (series_id, season, episode))
+        return {"cancelled": True}
+
+    def restore_sources(self):
+        """Give saved manual series downloads the same future-episode checks."""
+        with connect(self.database) as db:
+            root = settings(db)["videos_path"]
+            cursor = self.restored_roots.get(root, 0)
+            rows = db.execute("SELECT rowid,body FROM download_requests WHERE root=? AND rowid>? ORDER BY rowid",
+                              (root, cursor)).fetchall()
+        for row in rows:
+            body = json.loads(row["body"])
+            if body.get("payload", {}).get("is_movie"):
+                continue
+            try:
+                self._ensure_series(body.get("site"), body.get("payload"), mode='baseline', expected_root=root)
+            except ValueError:
+                with connect(self.database) as db:
+                    if settings(db)["videos_path"] != root:
+                        return
+                continue  # Legacy requests without a stable source remain manual.
+        self.restored_roots[root] = rows[-1]["rowid"] if rows else cursor
+
+    def check(self, subscription, *, baseline=False, full=False):
         token = uuid.uuid4().hex
         with connect(self.database) as db:
             current = db.execute("SELECT * FROM subscriptions WHERE id=?", (subscription["id"],)).fetchone()
@@ -136,8 +265,8 @@ class SeriesMonitor:
         try:
             result = self.engine.call("episodes", {"site": subscription["site"],
                 "payload": json.loads(subscription["payload"]), "lookup_token": token,
-                "latest_only": bool(current["initialized"])})
-            self._finish_check(subscription, result, token)
+                "latest_only": bool(current["initialized"]) and not full})
+            self._finish_check(subscription, result, token, baseline=baseline)
         except Exception as error:
             message = str(error) if isinstance(error, (VibraVidError, ValueError)) else "Episode lookup failed. Check the service logs."
             with connect(self.database) as db:
@@ -146,7 +275,7 @@ class SeriesMonitor:
                     (message, int(time.time()) + INTERVAL, subscription["id"], token))
             raise
 
-    def _finish_check(self, subscription, result, token):
+    def _finish_check(self, subscription, result, token, *, baseline=False):
         episodes = result.get("episodes")
         if not isinstance(episodes, list) or len(episodes) > 20000:
             raise VibraVidError("Invalid episode metadata; previous discoveries preserved")
@@ -181,11 +310,13 @@ class SeriesMonitor:
             elif checked_seasons:
                 db.execute("UPDATE discoveries SET listed=0 WHERE subscription_id=? AND season=?",
                            (current["id"], checked_seasons[0]))
+            latest = max((season for season, episode in found), default=None)
             for (season, episode), title in found.items():
+                state = 'dismissed' if baseline and (current["mode"] != 'auto' or season != latest) else 'new'
                 db.execute("""INSERT INTO discoveries(subscription_id,season,episode,title,state)
                     VALUES(?,?,?,?,?) ON CONFLICT(subscription_id,season,episode)
                     DO UPDATE SET title=excluded.title,listed=1""",
-                    (current["id"], season, episode, title, "new"))
+                    (current["id"], season, episode, title, state))
             season_count = len(checked_seasons) if checked_seasons is not None else len({season for season, episode in found})
             db.execute("""UPDATE subscriptions SET initialized=?,checked_at=?,next_check=?,error='',lookup_state='complete',lookup_token='',
                 lookup_episodes=?,lookup_seasons_done=?,lookup_seasons_total=? WHERE id=?""",
@@ -265,7 +396,7 @@ class SeriesMonitor:
             subscription = db.execute("SELECT * FROM subscriptions WHERE id=? AND root=?",
                 (subscription_id, settings(db)["videos_path"])).fetchone()
             if not subscription:
-                raise ValueError("Followed series not found in this library")
+                raise ValueError("Series not found in this library")
             discovery = db.execute("SELECT * FROM discoveries WHERE subscription_id=? AND season=? AND episode=?",
                                    (subscription_id, season, episode)).fetchone()
             if not discovery:
@@ -282,8 +413,9 @@ class SeriesMonitor:
                 capacity = int(config["download_limit"])
                 if len(queue["active"]) + len(queue["scheduled"]) >= capacity:
                     return False
-                if (subscription["mode"] != "auto" or discovery["state"] != "new" or not discovery["listed"]
-                        or status["excluded"] or status["watched"]
+                manual = discovery["state"] == 'manual_pending'
+                if (subscription["mode"] != "auto" or discovery["state"] not in ("new", "manual_pending") or not discovery["listed"]
+                        or (not manual and (status["excluded"] or status["watched"]))
                         or settings(db).get("scan_error") or not settings(db).get("last_scan")
                         or not Path(subscription["root"]).is_dir()):
                     return False
@@ -324,6 +456,7 @@ class SeriesMonitor:
         if not self.lock.acquire(blocking=False):
             return
         try:
+            self.restore_sources()
             with connect(self.database) as db:
                 pending = db.execute("""SELECT 1 FROM discoveries d JOIN subscriptions s ON s.id=d.subscription_id
                     WHERE s.root=? AND d.state IN ('submitted','submitting','uncertain')
@@ -344,22 +477,27 @@ class SeriesMonitor:
                 if self.retries.pending():
                     return
             with connect(self.database) as db:
-                subscriptions = db.execute("SELECT * FROM subscriptions WHERE root=? AND mode!='paused'",
+                subscriptions = db.execute("SELECT * FROM subscriptions WHERE root=? AND mode IN ('auto','notify','baseline')",
                                            (settings(db)["videos_path"],)).fetchall()
             for subscription in subscriptions:
                 try:
                     if subscription["error"] and subscription["next_check"] > time.time():
                         continue
                     if subscription["next_check"] <= time.time():
-                        self.check(subscription)
+                        self.check(subscription, baseline=subscription["mode"] == 'baseline', full=subscription["mode"] == 'baseline')
+                        if subscription["mode"] == 'baseline':
+                            with connect(self.database) as db:
+                                db.execute("UPDATE subscriptions SET mode='auto' WHERE id=?", (subscription["id"],))
+                            continue
                     if subscription["mode"] == "auto":
                         with connect(self.database) as db:
-                            new = db.execute("SELECT season,episode FROM discoveries WHERE subscription_id=? AND state='new' AND listed=1 ORDER BY season,episode",
+                            new = db.execute("SELECT season,episode,state FROM discoveries WHERE subscription_id=? AND state IN ('new','manual_pending') AND listed=1 ORDER BY state!='manual_pending',season,episode",
                                              (subscription["id"],)).fetchall()
                             # Skip known local/watched/excluded episodes before
                             # querying the engine queue. Download rechecks these
                             # rules under the write lock before claiming a send.
-                            new = [item for item in new if not any(episode_status(db, subscription, item["season"], item["episode"]).values())]
+                            new = [item for item in new if not episode_status(db, subscription, item["season"], item["episode"])["available"]
+                                   and (item["state"] == 'manual_pending' or not any(episode_status(db, subscription, item["season"], item["episode"]).values()))]
                             limit = int(settings(db)["download_limit"])
                         for item in new[:limit]:
                             self.download(subscription["id"], item["season"], item["episode"], automatic=True)

@@ -105,11 +105,16 @@ class IntegrationTest(unittest.TestCase):
             self.assertEqual(self.post("metadata", {}).status_code, 405)
             self.assertEqual(self.post("retry_download", {}).status_code, 405)
             call.assert_not_called()
-            choice = {"site": "example", "payload": {"name": "Show", "type": "tv"}}
+            choice = {"site": "example", "payload": {"name": "Show", "type": "tv", "id": "show"}}
             response = self.post("episodes", {**choice, "lookup_token": "must-not-reach-engine"})
             self.assertEqual(response.status_code, 200)
-            self.assertEqual(response.json, {"episodes": episodes})
-            call.assert_called_once_with("episodes", choice)
+            self.assertEqual(response.json["series_id"], 1)
+            self.assertEqual(response.json["episodes"], [{**ep, "available": False, "locked": False} for ep in episodes])
+            sent = call.call_args.args
+            self.assertEqual(sent[0], "episodes")
+            self.assertEqual(sent[1]["payload"], choice["payload"])
+            self.assertNotEqual(sent[1]["lookup_token"], "must-not-reach-engine")
+            self.assertFalse(sent[1]["latest_only"])
 
     def test_csrf_allowlist_and_validation_prevent_engine_calls(self):
         self.assertEqual(self.client.post("/admin/vibravid/download", json={}).status_code, 403)

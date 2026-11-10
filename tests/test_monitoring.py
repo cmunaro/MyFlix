@@ -112,9 +112,9 @@ class MonitoringTest(unittest.TestCase):
                 self.assertEqual(response.headers["Cache-Control"], "no-store")
                 self.assertNotIn(token.encode(), response.data)
                 self.assertNotIn(b"payload", response.data)
-                page = self.client.get("/admin?section=following").data
-                self.assertIn(b'data-lookup-progress', page)
-                self.assertIn(b'max="2" value="1"', page)
+                page = self.client.get("/admin").data
+                self.assertNotIn(b'data-lookup-progress', page)
+                self.assertNotIn(b'following.js', page)
                 # Another library's follows must never leak through the endpoint.
                 with connect(self.database) as db:
                     db.execute("UPDATE subscriptions SET root='/other-library' WHERE id=1")
@@ -224,9 +224,9 @@ class MonitoringTest(unittest.TestCase):
                          [(1, 1, "new"), (1, 3, "new"), (2, 1, "new")])
         self.assertTrue(all(row["listed"] for row in self.discoveries()), "older seasons retain their listings")
         initialize(self.database)
-        page = self.client.get("/admin?section=following").data
-        self.assertIn(b"New episodes", page)
-        self.assertIn(b"Automatically download unwatched", page)
+        page = self.client.get("/admin").data
+        self.assertIn(b"Only new episodes", page)
+        self.assertNotIn(b">Following<", page)
         with connect(self.database) as db:
             sub = db.execute("SELECT * FROM subscriptions").fetchone()
             self.assertGreaterEqual(sub["next_check"], sub["checked_at"] + INTERVAL)
@@ -329,11 +329,11 @@ class MonitoringTest(unittest.TestCase):
                 SELECT root,'Other Show',site,'other',payload,'paused' FROM subscriptions WHERE id=1""")
         initialize(self.database)
         with connect(self.database) as db:
-            self.assertEqual([r[0] for r in db.execute("SELECT mode FROM subscriptions ORDER BY id")], ["auto", "paused"])
+            self.assertEqual([r[0] for r in db.execute("SELECT mode FROM subscriptions ORDER BY id")], ["baseline", "baseline"])
             self.assertEqual(db.execute("SELECT next_check FROM subscriptions WHERE id=1").fetchone()[0], 0)
-        self.assertEqual([r["state"] for r in self.discoveries()], ["new", "uncertain", "submitted", "dismissed", "submitting"])
+        self.assertEqual([r["state"] for r in self.discoveries()], ["dismissed", "uncertain", "submitted", "dismissed", "submitting"])
         self.monitor.tick()
-        self.assertEqual([b["episodes"] for a, b in self.provider.calls if a == "download"], ["1"])
+        self.assertEqual([b["episodes"] for a, b in self.provider.calls if a == "download"], [])
         self.post("/admin/following/1", {"mode": "notify"})
         initialize(self.database)
         with connect(self.database) as db:
@@ -412,13 +412,9 @@ class MonitoringTest(unittest.TestCase):
             self.assertEqual(self.client.get("/admin/vibravid/queue").status_code, 200)
         self.assertEqual(self.discoveries()[0]["state"], "failed")
         self.assertEqual(self.discoveries()[0]["error"], failure["error"])
-        page = self.client.get("/admin?section=following").data
-        self.assertIn(b"Season 1", page)
-        self.assertIn(b"Failed downloads", page)
-        self.assertIn("S1 · E1".encode(), page)
-        self.assertIn(b"Merge failed &lt;script&gt;bad&lt;/script&gt;", page)
-        self.assertIn(b"Retry failed episode", page)
-        self.assertNotIn(b"Allow manual retry", page)
+        visible = self.monitor.retries.present(copy.deepcopy(self.provider.queue))["history"]
+        self.assertEqual(len(visible), 1)
+        self.assertEqual((visible[0]["season"], visible[0]["episode"], visible[0]["error"]), (1, 1, failure["error"]))
         self.provider.queue["history"] = []
         initialize(self.database)
         self.monitor.tick()
@@ -1053,7 +1049,7 @@ class MonitoringTest(unittest.TestCase):
         self.post("/admin/settings", {"videos_path": str(other)})
         self.assertEqual(self.post("/admin/following/1", {"mode": "auto"}).status_code, 404)
         self.assertEqual(self.post("/admin/following/1/1/1", {"action": "download"}).status_code, 400)
-        self.assertIn(b"No followed series", self.client.get("/admin?section=following").data)
+        self.assertNotIn(b">Following<", self.client.get("/admin?section=following").data)
 
     def test_season_changes_during_provider_read_win_and_failed_mount_blocks_auto(self):
         self.follow()
@@ -1115,7 +1111,7 @@ class MonitoringTest(unittest.TestCase):
         scan(self.database)
         with connect(self.database) as db:
             self.assertEqual(tuple(db.execute("SELECT media_id,position,duration,watched FROM progress").fetchone()), (media_id, 96, 100, 1))
-            self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], 3)
+            self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], 4)
         outside = self.base / "private.mp4"
         outside.write_bytes(b"private")
         file.unlink()

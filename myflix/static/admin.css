@@ -115,3 +115,7 @@
 .tv-admin .episode-picker input[type=checkbox]{width:26px;height:26px;min-height:26px;flex-shrink:0;margin:0;padding:0}
 .episode-list{padding-left:28px}
 .episode-picker [hidden]{display:none!important}
+
+.series-download-actions{display:flex;gap:12px;flex-wrap:wrap;margin-top:16px}
+.series-download-actions button{flex:1;min-width:160px}
+.episode-picker input:disabled{opacity:.55;cursor:default}

@@ -356,7 +356,7 @@ def create_app(config=None):
     @app.get("/admin")
     def admin():
         section = request.args.get("section", "downloads")
-        if section not in ("downloads", "library", "settings", "following", "removed"):
+        if section not in ("downloads", "library", "settings", "removed"):
             section = "downloads"
         query = request.args.get("q", "").strip()[:200]
         with connect(database) as db:
@@ -364,16 +364,6 @@ def create_app(config=None):
             items = [dict(row) for row in db.execute("""SELECT m.*,COALESCE(p.watched,0) watched
                 FROM media m LEFT JOIN progress p ON p.media_id=m.id
                 WHERE root=? ORDER BY series,season,episode,title""", (config["videos_path"],))]
-            subscriptions = [dict(row) for row in db.execute("SELECT * FROM subscriptions WHERE root=? ORDER BY series",
-                                                            (config["videos_path"],))]
-            for subscription in subscriptions:
-                subscription["lookup"] = lookup_status(subscription, config)
-            for subscription in subscriptions if section == "following" else []:
-                subscription["episodes"] = [dict(row) for row in db.execute(
-                    "SELECT * FROM discoveries WHERE subscription_id=? ORDER BY season,episode", (subscription["id"],))]
-                for episode in subscription["episodes"]:
-                    episode.update(episode_status(db, subscription, episode["season"], episode["episode"]))
-                subscription["seasons"] = sorted({e["season"] for e in subscription["episodes"]})
             rules = {(r["series"], r["season"]): dict(r) for r in db.execute(
                 "SELECT * FROM season_state WHERE root=?", (config["videos_path"],))}
         all_catalog_ids = sorted(item["id"] for item in items)
@@ -386,7 +376,7 @@ def create_app(config=None):
             if item["series"]:
                 groups.setdefault(item["series"], {}).setdefault(item["season"], []).append(item)
         return render_template("admin.html", config=config, items=items, groups=groups, rules=rules,
-                               subscriptions=subscriptions, section=section, query=query, catalog_ids=all_catalog_ids,
+                               section=section, query=query, catalog_ids=all_catalog_ids,
                                notice=request.args.get("notice", ""))
 
     @app.get("/admin/following/status")
@@ -531,6 +521,15 @@ def create_app(config=None):
             db.execute("INSERT OR REPLACE INTO settings VALUES('processing_limit',?)", (str(processing),))
         return redirect(url_for("admin", section="settings", notice="Limits saved. Restart MyFlix to apply them; current jobs continue with their existing limits."))
 
+    @app.post("/admin/downloads/series")
+    def start_series_downloads():
+        # Whole-series selections can exceed the default small form budget.
+        request.max_content_length = 1024 * 1024
+        body = request.get_json()
+        if not isinstance(body, dict):
+            abort(400)
+        return jsonify(monitor.start(body.get("series_id"), body.get("selection"), body.get("only_new"), body.get("source")))
+
     @app.post("/admin/downloads/retry-failed")
     def retry_failed_downloads():
         try:
@@ -574,10 +573,14 @@ def create_app(config=None):
             if action == "download":
                 with monitor.download_lock:
                     result = monitor.retries.submit(vibravid, body)
+            elif action == "cancel" and body["download_id"].startswith("selection:"):
+                result = monitor.cancel_selection(body["download_id"])
             elif action == "cancel":
                 with monitor.download_lock:
                     monitor.retries.cancel_pending(vibravid.call("queue"), body["download_id"])
                     result = vibravid.call(action, body)
+            elif action == "episodes":
+                result = monitor.inspect(body["site"], body["payload"])
             else:
                 result = vibravid.call(action, body)
             if action == "queue":

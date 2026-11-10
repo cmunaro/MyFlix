@@ -188,7 +188,7 @@ assert.equal(ui.document.activeElement, choose, 'results receive focus when sear
 assert.equal(ui.el('download-results').querySelectorAll('button').length, 1, 'series exposes only Choose episodes');
 assert.equal(ui.el('download-results').querySelectorAll('input').length, 0, 'no library name field');
 choose.click(); choose.click(); assert.equal(ui.pending.filter(xhr => xhr.action === 'episodes').length, 1);
-const metadataRequest = ui.reply('episodes', {episodes: [
+const metadataRequest = ui.reply('episodes', {series_id: 7, episodes: [
   {season: 0, episode: 1, title: 'Special'},
   {season: 1, episode: 1, title: 'Pilot <script>safe</script>'},
   {season: 1, episode: 3, title: 'Third'},
@@ -229,29 +229,52 @@ assert(!allSeasons.checked && !allSeasons.indeterminate, 'empty selection clears
 submit.click(); assert(!ui.pending.some(xhr => xhr.action === 'download'), 'empty selection cannot submit');
 inputs(sections[0])[0].click(); inputs(sections[1])[2].click(); inputs(sections[2])[0].click();
 submit.focus(); submit.click(); submit.click();
-assert.equal(ui.pending.filter(xhr => xhr.action === 'download').length, 1, 'only one mutation in flight');
-const first = ui.reply('download', {queued: true});
-assert.equal(first.body.season, '0', 'special season is supported');
-assert.equal(first.body.episodes, '1');
-const second = ui.reply('download', {queued: true});
-assert.equal(second.body.season, '1'); assert.equal(second.body.episodes, '3', 'only selected actual episode numbers submitted');
-const request = ui.reply('download', {error: 'Connection uncertain. Check queue.'}, 502);
-assert.equal(request.body.season, '2'); assert.equal(request.body.episodes, '1-2', 'full selection uses exact range');
+assert.equal(ui.pending.filter(xhr => xhr.action === 'series').length, 1, 'only one series action in flight');
+const request = ui.reply('series', {error: 'Connection uncertain. Check queue.'}, 502);
+assert.equal(request.body.series_id, 7);
+assert.equal(request.body.only_new, false);
+assert.deepEqual(request.body.selection, [{season: 0, episode: 1}, {season: 1, episode: 3}, {season: 2, episode: 1}, {season: 2, episode: 2}]);
 assert.equal(request.headers['X-CSRF-Token'], 'csrf-token');
-submit.click(); assert(!ui.pending.some(xhr => xhr.action === 'download'), 'uncertain download is never retried');
+submit.click(); assert(!ui.pending.some(xhr => xhr.action === 'series'), 'uncertain selection is never resubmitted');
 assert.equal(ui.document.activeElement, submit, 'failed action retains remote focus');
-assert(ui.el('download-message').textContent.includes('2 of 3 selections accepted'), 'partial submission explains accepted work');
 assert(ui.el('download-results').children.length, 'uncertain submission preserves results');
 const success = screen(); success.downloads();
 success.form.onsubmit({preventDefault() {}});
 success.reply('search', {results: [{title: 'Show', site: 'example', payload: {name: 'Show'}}]});
 success.el('download-results').querySelector('button').click();
-success.reply('episodes', {episodes: [{season: 1, episode: 1}, {season: 1, episode: 2}]});
+success.reply('episodes', {series_id: 1, episodes: [{season: 1, episode: 1}, {season: 1, episode: 2}]});
 success.el('download-results').querySelectorAll('button').find(button => button.textContent === 'Download').click();
-success.reply('download', {queued: true});
+success.reply('series', {queued: true, selected: 2});
 assert.equal(success.el('download-results').children.length, 0, 'accepted series clears search results');
 assert.equal(success.document.activeElement, success.search, 'clearing results restores search focus');
-assert(!success.pending.some(xhr => xhr.action === 'follow'), 'manual selection never enables autodownload');
+assert(!success.pending.some(xhr => xhr.action === 'follow'), 'series action does not require a separate follow request');
+const locks = screen(); locks.downloads();
+locks.form.onsubmit({preventDefault() {}});
+locks.reply('search', {results: [{title: 'Show', site: 'example', payload: {name: 'Show'}}]});
+locks.el('download-results').querySelector('button').click();
+locks.reply('episodes', {series_id: 5, episodes: [
+  {season: 1, episode: 1, available: true, locked: true},
+  {season: 1, episode: 2, available: true, locked: true},
+  {season: 2, episode: 1, available: true, locked: true},
+  {season: 2, episode: 2, available: false, locked: false}
+]});
+const lockedSeasons = locks.el('download-results').querySelectorAll('.episode-season');
+const lockedInputs = lockedSeasons[0].querySelectorAll('input');
+assert(lockedInputs.every(input => input.disabled && input.checked), 'downloaded season and episodes cannot be toggled');
+lockedInputs[0].click(); lockedInputs[1].click();
+assert(lockedInputs.every(input => input.checked), 'disabled checkboxes retain downloaded state');
+const mixedInputs = lockedSeasons[1].querySelectorAll('input');
+assert(!mixedInputs[0].disabled && mixedInputs[1].disabled && !mixedInputs[2].disabled, 'partially downloaded season keeps only missing episodes selectable');
+const allLocked = locks.el('download-results').querySelector('.episode-picker').querySelector('input');
+allLocked.click(); assert(mixedInputs[1].checked && !mixedInputs[2].checked, 'select all never changes downloaded episodes');
+allLocked.click(); assert(mixedInputs[2].checked);
+const newOnly = locks.el('download-results').querySelectorAll('button').find(button => button.textContent === 'Only new episodes');
+newOnly.click(); newOnly.click();
+assert.equal(locks.pending.filter(xhr => xhr.action === 'series').length, 1);
+const newOnlyRequest = locks.reply('series', {queued: true, selected: 0, only_new: true});
+assert.deepEqual(newOnlyRequest.body, {series_id: 5, selection: [], only_new: true}, 'Only new episodes ignores existing checked selections');
+assert.equal(locks.el('download-results').children.length, 0, 'new-only action clears results');
+assert(locks.el('download-message').textContent.includes('Episodes listed now are skipped'));
 const errors = screen(); errors.downloads();
 errors.reply('sites', {groups: []});
 errors.reply('status', {slots: {active: 0, max: 4}, queued: 0});
@@ -275,7 +298,7 @@ assert(!errors.el('download-queue').querySelector('script'), 'provider errors ca
 errors.el('download-queue').querySelector('a').focus();
 errors.intervals[0](); errors.reply('queue', failedQueue);
 assert.equal(errors.document.activeElement, errors.el('download-queue').querySelector('a'), 'failed episode review retains focus');
-assert.equal(errors.document.activeElement.href, '/admin?section=following');
+assert.equal(errors.document.activeElement.href, '/admin?section=downloads&q=Show');
 errors.reply('status', {slots: {active: 0, max: 4}, queued: 0});
 const retryAll = errors.el('retry-failed-downloads');
 assert(!retryAll.hidden, 'bulk retry is available when failures are shown');

@@ -223,6 +223,15 @@ class DownloadRetries:
                 if key not in hidden and not retried:
                     unique[target_key(item)] = item
             queue["history"] = list(unique.values())
+            # Selected episodes wait durably in MyFlix until an engine slot opens.
+            queue.setdefault("scheduled", []).extend({"id": f"selection:{row['subscription_id']}:{row['season']}:{row['episode']}", "title": row["series"], "site": row["site"],
+                "season": row["season"], "episode": row["episode"], "status": "Queued", "priority": False}
+                for row in db.execute("""SELECT s.series,s.site,d.subscription_id,d.season,d.episode FROM discoveries d
+                    JOIN subscriptions s ON s.id=d.subscription_id
+                    WHERE s.root=? AND d.state='manual_pending' ORDER BY s.id,d.season,d.episode""", (root,)))
+            queue["checks"] = [{"series": row["series"], "error": row["error"]} for row in db.execute(
+                "SELECT series,error FROM subscriptions WHERE root=? AND mode IN ('auto','baseline') AND error!=''", (root,))]
+
             queue["retrying"] = [{**json.loads(row["source"]), "id": "retry:" + str(row["id"]),
                                   "status": "Priority retry queued" if row["state"] == "pending" else "Request unconfirmed — check queue",
                                   "priority": True, "error": row["error"]}

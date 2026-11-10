@@ -156,11 +156,17 @@ def initialize(path):
         db.execute("INSERT OR IGNORE INTO settings VALUES('download_limit','4')")
         db.execute("INSERT OR IGNORE INTO settings VALUES('processing_limit','1')")
         if db.execute("PRAGMA user_version").fetchone()[0] < 3:
-            # Follow now includes automatic catch-up. Upgrade existing follows,
-            # retaining pauses, dismissals and all uncertain download reservations.
-            db.execute("UPDATE subscriptions SET mode='auto',next_check=0 WHERE mode='notify'")
-            db.execute("UPDATE discoveries SET state='new' WHERE state='baseline'")
+            # Preserve legacy baseline episodes as skipped when upgrading the
+            # automatic checks, without replaying old episodes or uncertain sends.
+            db.execute("UPDATE discoveries SET state='dismissed' WHERE state='baseline'")
             db.execute("PRAGMA user_version=3")
+        if db.execute("PRAGMA user_version").fetchone()[0] < 4:
+            # Monitoring now belongs to every saved series. Preserve existing
+            # reservations and skip old notification/paused backlogs on upgrade.
+            db.execute("""UPDATE discoveries SET state='dismissed' WHERE state='new' AND subscription_id IN
+                (SELECT id FROM subscriptions WHERE mode IN ('notify','paused'))""")
+            db.execute("UPDATE subscriptions SET mode='baseline',next_check=0 WHERE mode IN ('notify','paused')")
+            db.execute("PRAGMA user_version=4")
 
 
 def settings(db):

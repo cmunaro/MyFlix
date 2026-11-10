@@ -9,11 +9,11 @@
     <summary><span class="catalog-title">{{ series }}</span><span>{{ seasons|length }} seasons</span><span aria-hidden="true">⌄</span></summary>
     {% for season,episodes in seasons.items() %}
     <details class="catalog-season" data-catalog-key="season:{{ series }}:{{ season }}"><summary><span>Season {{ season }}</span><span>{{ episodes|length }} {{ 'episode' if episodes|length == 1 else 'episodes' }}</span><span aria-hidden="true">⌄</span></summary>{{ season_controls(series,season,rules.get((series,season))) }}
-      {% for item in episodes %}{{ media_editor(item,subscriptions,section == 'removed') }}{% endfor %}
+      {% for item in episodes %}{{ media_editor(item,section == 'removed') }}{% endfor %}
     </details>
     {% endfor %}
   </details>
   {% endfor %}
-  {% for item in items if not item.series %}{{ media_editor(item,subscriptions,section == 'removed') }}{% endfor %}
+  {% for item in items if not item.series %}{{ media_editor(item,section == 'removed') }}{% endfor %}
   {% if not items %}<div class="admin-empty"><h3>{{ 'No watched and removed videos' if section == 'removed' else 'No matching titles' if query else 'Your collection starts here' }}</h3><p>{{ 'Saved history will appear here when watched video files are removed.' if section == 'removed' else 'Find a film or series in Downloads, or choose your videos folder in Settings.' }}</p><a class="button primary" href="{{ url_for('admin',section='downloads') }}">Find a title</a></div>{% endif %}
 </section>
