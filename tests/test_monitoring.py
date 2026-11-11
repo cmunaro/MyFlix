@@ -1078,6 +1078,50 @@ class MonitoringTest(unittest.TestCase):
             self.assertEqual(db.execute("SELECT series FROM media").fetchone()[0], "My Show")
             self.assertEqual(db.execute("SELECT watched FROM progress").fetchone()[0], 1)
 
+    def test_sanitized_provider_filename_rejoins_existing_series_without_losing_edits(self):
+        self.payload['name'] = 'Gli anelli: Il potére'
+        self.follow('Gli anelli: Il potére')
+        self.video('Gli anelli Il potere S01E01 First.mkv')
+        # Reproduce a file indexed by a version without sanitized aliases.
+        with connect(self.database) as db:
+            db.execute("""INSERT INTO media(root,path,title,series,season,episode,size,hidden)
+                VALUES(?,?,'Edited episode','Gli anelli Il potere',1,1,5,1)""",
+                (str(self.library), 'Gli anelli Il potere S01E01 First.mkv'))
+            identity = db.execute('SELECT id FROM media').fetchone()[0]
+            db.execute('INSERT INTO progress(media_id,position,watched) VALUES(?,42,1)', (identity,))
+            db.execute("UPDATE discoveries SET state='submitted'")
+        scan(self.database)
+        with connect(self.database) as db:
+            row = db.execute('SELECT id,title,series,hidden FROM media').fetchone()
+            self.assertEqual(tuple(row), (identity, 'Edited episode', self.payload['name'], 1))
+            self.assertEqual(tuple(db.execute('SELECT position,watched FROM progress').fetchone()), (42, 1))
+            self.assertEqual(db.execute('SELECT state FROM discoveries').fetchone()[0], 'downloaded')
+            db.execute("UPDATE media SET series='Household series'")
+        scan(self.database)
+        with connect(self.database) as db:
+            self.assertEqual(db.execute('SELECT series FROM media').fetchone()[0], 'Household series')
+
+    def test_sanitized_alias_is_shared_by_scan_and_completion(self):
+        from myflix.catalog import import_completed
+        self.payload['name'] = 'Gli anelli: Il potére'
+        self.follow('My series')
+        self.video('Gli anelli Il potere S01E01 First.mkv')
+        scan(self.database)
+        second = self.video('Gli anelli Il potere S01E02 Second.mkv')
+        import_completed(self.database, second, self.library)
+        with connect(self.database) as db:
+            self.assertEqual([r[0] for r in db.execute('SELECT series FROM media')], ['My series', 'My series'])
+
+    def test_colliding_sanitized_provider_aliases_are_not_guessed(self):
+        self.payload['name'] = 'Show: Name'
+        self.follow('First series')
+        self.payload.update(id='show-2', name='Show Name')
+        self.follow('Second series')
+        self.video('Show Name S01E01.mkv')
+        scan(self.database)
+        with connect(self.database) as db:
+            self.assertEqual(db.execute('SELECT series FROM media').fetchone()[0], 'Show Name')
+
     def test_csrf_input_validation_root_isolation_and_pause(self):
         self.assertEqual(self.client.post("/admin/follow", json={}).status_code, 403)
         self.assertEqual(self.post("/admin/follow", body={"site": "example", "payload": {}, "series": "Show"}).status_code, 400)

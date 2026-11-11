@@ -83,6 +83,8 @@ Correct unusual names and metadata in **Library**. Local JPEG artwork is support
 
 Catalog edits and watch progress survive rescans and missing files. An unavailable mount preserves the previous catalog and reports a scan error. Removing a video through admin deletes its library file but keeps its catalog details and watch history; sidecars and staging originals remain.
 
+Provider series names are matched to the engine's sanitized filenames (including removed punctuation and transliterated accents). Scanning rejoins previously split entries when their series and episode numbers still match filename inference, preserving episode edits and watch progress. Ambiguous provider names remain separate.
+
 Library also lists cached provider episodes that have not been downloaded, including series with no local episodes yet. Status labels distinguish **Downloaded**, **Not downloaded**, queued work, and unavailable episodes. Use an episode's **Download** button to queue it directly. Missing episodes also support **Mark as watched** and **Mark as unwatched**; that history remains when the file is downloaded later. **Mark all as watched** affects only known episodes and does not change automatic-download settings. **Download all** queues the season’s missing available episodes. Only the latest season shows **Download new episodes**, checked by default. This saved checkbox controls future automatic downloads and follows the series into new seasons; it does not cancel work already queued. Manual downloads work even when it is off and preserve that preference.
 
 ### Download a series
