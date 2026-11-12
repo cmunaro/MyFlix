@@ -6,6 +6,9 @@ import re
 import time
 from pathlib import Path
 
+from pathvalidate import sanitize_filename
+from unidecode import unidecode
+
 from .db import connect, settings
 from .notifications import record_download
 
@@ -13,20 +16,23 @@ EXTENSIONS = {".mp4", ".m4v", ".mkv", ".webm", ".mov"}
 EPISODE = re.compile(r"(?i)(?:s(\d{1,3})[ ._-]*e(\d{1,4})|(\d{1,3})x(\d{1,4}))")
 
 
+def _clean_name(name):
+    return re.sub(r"[._]+", " ", name).strip(" -")
+
+
 def identify(path):
     match = EPISODE.search(path.stem)
-    clean = lambda name: re.sub(r"[._]+", " ", name).strip(" -")
     if not match:
-        return clean(path.stem), "", None, None
+        return _clean_name(path.stem), "", None, None
     season = int(match[1] or match[3])
     episode = int(match[2] or match[4])
-    series = clean(path.stem[:match.start()])
+    series = _clean_name(path.stem[:match.start()])
     if not series:
         parent = path.parent
         if re.match(r"(?i)^season[ ._-]*\d+$", parent.name):
             parent = parent.parent
-        series = clean(parent.name) or "Unknown series"
-    title = clean(path.stem[match.end():]) or f"Episode {episode}"
+        series = _clean_name(parent.name) or "Unknown series"
+    title = _clean_name(path.stem[match.end():]) or f"Episode {episode}"
     return title, series, season, episode
 
 
@@ -163,11 +169,19 @@ def _index_files(db, root_value, found, *, full_scan):
     found_paths = {relative for relative, _, _ in found} if full_scan else None
     aliases = {}
     for row in db.execute("SELECT series,payload FROM subscriptions WHERE root=?", (root_value,)):
-        aliases.setdefault(json.loads(row["payload"]).get("name"), []).append(row["series"])
+        name = json.loads(row["payload"]).get("name")
+        if not isinstance(name, str) or not name:
+            continue
+        # Use the pinned engine's filename dependencies without importing its
+        # runtime. identify() also turns filename dots/underscores into spaces.
+        filename = sanitize_filename(unidecode(name))
+        for alias in {name, _clean_name(filename)}:
+            aliases.setdefault(alias, set()).add(row["series"])
     for relative, size, (title, series, season, episode) in found:
         key = source_identity(relative)
+        inferred_series = series
         if len(aliases.get(series, [])) == 1:
-            series = aliases[series][0]
+            series = next(iter(aliases[series]))
         existing = db.execute("SELECT id FROM media WHERE root=? AND path=?", (root_value, relative)).fetchone()
         if not existing:
             # Reattach an unambiguous returning title to its durable catalog
@@ -180,8 +194,10 @@ def _index_files(db, root_value, found, *, full_scan):
                 db.execute("UPDATE media SET path=? WHERE id=?", (relative, candidates[0]["id"]))
         db.execute("""INSERT INTO media(root,path,title,series,season,episode,size)
             VALUES(?,?,?,?,?,?,?) ON CONFLICT(root,path) DO UPDATE SET
-            available=1,size=excluded.size""",
-            (root_value, relative, title, series, season, episode, size))
+            available=1,size=excluded.size,
+            series=CASE WHEN media.series=? AND media.season=excluded.season
+                AND media.episode=excluded.episode THEN excluded.series ELSE media.series END""",
+            (root_value, relative, title, series, season, episode, size, inferred_series))
         db.execute("""INSERT OR IGNORE INTO media_identity(media_id,identity)
             SELECT id,? FROM media WHERE root=? AND path=?""", (key, root_value, relative))
     # Preserve legacy season rules and episode history recorded before a file arrived.
