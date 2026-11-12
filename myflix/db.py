@@ -54,6 +54,12 @@ def initialize(path):
                 watched INTEGER NOT NULL DEFAULT 0,
                 updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
+            CREATE TABLE IF NOT EXISTS notification_state (
+                root TEXT NOT NULL, notice_id TEXT NOT NULL,
+                seen INTEGER NOT NULL DEFAULT 0,
+                cleared INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY(root,notice_id)
+            );
             CREATE TABLE IF NOT EXISTS credits (
                 fingerprint TEXT PRIMARY KEY,
                 position REAL,

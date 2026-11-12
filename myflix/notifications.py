@@ -33,7 +33,26 @@ def record_download(db, media_id):
 
 
 def download_notices(db, root):
-    return [dict(row) for row in db.execute("""SELECT n.id,n.message,n.created_at,m.id media_id,m.series
+    return [dict(row) for row in db.execute("""SELECT n.id,n.message,n.created_at,m.id media_id,m.series,
+        COALESCE(s.seen,0) seen
         FROM notifications n JOIN media m ON m.id=n.media_id
-        WHERE n.root=? AND m.hidden=0 AND m.available=1
-        ORDER BY n.id DESC LIMIT 50""", (root,))]
+        LEFT JOIN notification_state s ON s.root=n.root AND s.notice_id=CAST(n.id AS TEXT)
+        WHERE n.root=? AND m.hidden=0 AND m.available=1 AND COALESCE(s.cleared,0)=0
+        ORDER BY seen,n.id DESC""", (root,))]
+
+
+def mark_seen(db, root, ids):
+    for notice_id in ids:
+        if notice_id == "storage" or db.execute(
+                "SELECT 1 FROM notifications WHERE root=? AND id=?", (root, notice_id)).fetchone():
+            db.execute("""INSERT INTO notification_state(root,notice_id,seen) VALUES(?,?,1)
+                ON CONFLICT(root,notice_id) DO UPDATE SET seen=1""", (root, str(notice_id)))
+
+
+def clear_notices(db, root):
+    # Keep publication records so a repeated completion cannot recreate a notice.
+    db.execute("""INSERT INTO notification_state(root,notice_id,seen,cleared)
+        SELECT root,CAST(id AS TEXT),1,1 FROM notifications WHERE root=?
+        ON CONFLICT(root,notice_id) DO UPDATE SET seen=1,cleared=1""", (root,))
+    db.execute("""INSERT INTO notification_state(root,notice_id,seen,cleared) VALUES(?,'storage',1,1)
+        ON CONFLICT(root,notice_id) DO UPDATE SET seen=1,cleared=1""", (root,))

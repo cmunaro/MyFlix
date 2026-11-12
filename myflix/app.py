@@ -21,7 +21,7 @@ from .engine_jobs import validate_limits
 from .monitoring import SeriesMonitor, episode_status, follow, library_episodes, lookup_status
 from .matroska import HeaderOverlay, seekable_header
 from .metadata import MetadataCache
-from .notifications import download_notices
+from .notifications import clear_notices, download_notices, mark_seen
 from .vibravid import VibraVid, VibraVidError
 
 
@@ -157,13 +157,37 @@ def create_app(config=None):
             notice["href"] = url_for("series" if notice.pop("series") else "title", media_id=notice.pop("media_id"))
         try:
             usage = shutil.disk_usage(root)
-            if usage.total and usage.free / usage.total <= 0.1:
+            with connect(database) as db:
+                state = db.execute("SELECT seen,cleared FROM notification_state WHERE root=? AND notice_id='storage'",
+                                   (root,)).fetchone()
+                if usage.total and usage.free / usage.total > 0.1:
+                    db.execute("DELETE FROM notification_state WHERE root=? AND notice_id='storage'", (root,))
+            if usage.total and usage.free / usage.total <= 0.1 and not (state and state["cleared"]):
                 notices.insert(0, {"id": "storage", "message": "Storage nearly full",
+                                   "seen": state["seen"] if state else 0,
                                    "detail": f"{storage_size(usage.free)} free · {usage.free / usage.total:.1%} remaining",
                                    "href": url_for("admin", section="library")})
         except OSError:
             pass
+        notices.sort(key=lambda notice: bool(notice["seen"]))
         return jsonify(notifications=notices)
+
+    @app.post("/api/notifications/seen")
+    def notifications_seen():
+        body = request.get_json(silent=True)
+        ids = body.get("ids") if isinstance(body, dict) else None
+        if not isinstance(ids, list) or not 1 <= len(ids) <= 100 or any(
+                not (type(value) is int and 0 < value <= 2**63 - 1 or value == "storage") for value in ids):
+            abort(400, "Choose up to 100 notification IDs")
+        with connect(database) as db:
+            mark_seen(db, settings(db)["videos_path"], ids)
+        return jsonify(ok=True)
+
+    @app.post("/api/notifications/clear")
+    def notifications_clear():
+        with connect(database) as db:
+            clear_notices(db, settings(db)["videos_path"])
+        return jsonify(ok=True)
 
     @app.get("/")
     def home():

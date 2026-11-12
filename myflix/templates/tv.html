@@ -20,7 +20,8 @@
       <span id="notification-count" class="notification-count" hidden></span>
     </button>
     <section id="notifications" class="notifications" aria-label="Notifications" hidden>
-      <h2>Notifications</h2>
+      <div class="notification-heading"><h2>Notifications</h2><button id="notification-clear" type="button" disabled>Clear all</button></div>
+      <p id="notification-status" role="status"></p>
       <div id="notification-list" class="notification-list" tabindex="0" aria-live="polite"><p>Loading notifications…</p></div>
     </section>
     {% endif %}

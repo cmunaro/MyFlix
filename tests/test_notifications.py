@@ -91,3 +91,61 @@ class NotificationsTest(unittest.TestCase):
         page = self.client.get('/').data.decode()
         self.assertIn('id="notification-toggle"', page)
         self.assertIn('aria-controls="notifications"', page)
+
+    def post(self, action, body=None):
+        with self.client.session_transaction() as session:
+            session['csrf'] = 'test-token'
+        return self.client.post('/api/notifications/' + action, json=body or {},
+                                headers={'X-CSRF-Token': 'test-token'})
+
+    def test_seen_order_clear_and_new_publications(self):
+        for index in range(55):
+            self.publish(f'Film {index}.mp4')
+        notices = self.notices()
+        self.assertEqual(len(notices), 55, 'long lists retain every notice')
+        self.assertTrue(all(not n['seen'] for n in notices), 'GET never marks notices seen')
+        seen_ids = [n['id'] for n in notices[:2]]
+        self.assertEqual(self.post('seen', {'ids': seen_ids}).status_code, 200)
+        reordered = self.notices()
+        self.assertEqual([n['id'] for n in reordered[-2:]], seen_ids)
+        self.assertTrue(all(not n['seen'] for n in reordered[:-2]))
+        restarted = create_app({'TESTING': True, 'DATABASE': self.database})
+        self.assertTrue(restarted.test_client().get('/api/notifications').json['notifications'][-1]['seen'])
+        self.assertEqual(self.post('clear').status_code, 200)
+        self.assertEqual(self.notices(), [])
+        self.assertEqual(self.post('seen', {'ids': seen_ids}).status_code, 200)
+        self.assertEqual(self.notices(), [], 'late seen requests cannot undo clear')
+        with connect(self.database) as db:
+            self.assertEqual(db.execute('SELECT count(*) FROM media').fetchone()[0], 55)
+        # Repeat completion must not recreate dismissed publication notices.
+        import_completed(self.database, self.root / 'Film 0.mp4', str(self.root))
+        self.assertEqual(self.notices(), [])
+        self.publish('New film.mp4')
+        self.assertEqual([n['message'] for n in self.notices()], ['New film downloaded'])
+
+    def test_mutations_require_csrf_validate_ids_and_confine_root(self):
+        self.publish('Film.mp4')
+        notice_id = self.notices()[0]['id']
+        for action in ('seen', 'clear'):
+            self.assertEqual(self.client.post('/api/notifications/' + action, json={}).status_code, 403)
+        for ids in ([], [True], [-1], [2**63], ['1'], [{}], [1] * 101, 'storage'):
+            self.assertEqual(self.post('seen', {'ids': ids}).status_code, 400)
+        with connect(self.database) as db:
+            db.execute("UPDATE settings SET value=? WHERE key='videos_path'", (str(self.root / 'other'),))
+        self.post('seen', {'ids': [notice_id]})
+        self.post('clear')
+        with connect(self.database) as db:
+            db.execute("UPDATE settings SET value=? WHERE key='videos_path'", (str(self.root),))
+        self.assertFalse(self.notices()[0]['seen'])
+
+    def test_storage_seen_clear_and_recovery(self):
+        usage = namedtuple('Usage', 'total used free')
+        with patch('myflix.app.shutil.disk_usage', return_value=usage(100, 95, 5)):
+            self.assertFalse(self.client.get('/api/notifications').json['notifications'][0]['seen'])
+            self.post('seen', {'ids': ['storage']})
+            self.assertTrue(self.client.get('/api/notifications').json['notifications'][0]['seen'])
+            self.post('clear')
+            self.assertEqual(self.client.get('/api/notifications').json['notifications'], [])
+        self.notices()  # Healthy disk rearms the warning.
+        with patch('myflix.app.shutil.disk_usage', return_value=usage(100, 95, 5)):
+            self.assertFalse(self.client.get('/api/notifications').json['notifications'][0]['seen'])
